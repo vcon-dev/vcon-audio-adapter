@@ -59,6 +59,9 @@ class DirectoryIterator:
         self.batch_size = batch_size
         self.sort_order = sort_order
         self.progress = self._load_progress()
+        # Cache for current directory's file list (avoids re-scanning NFS)
+        self._cached_directory: Optional[str] = None
+        self._cached_files: List[str] = []
 
     def _load_progress(self) -> DirectoryProgress:
         """Load progress from checkpoint file."""
@@ -196,19 +199,32 @@ class DirectoryIterator:
                 self.progress.current_directory = str(directory)
                 self.progress.files_processed = 0
                 self.progress.last_file = None
+                self._cached_directory = None  # Clear cache for new directory
         else:
             directory = pending[0]
             self.progress.current_directory = str(directory)
             self.progress.files_processed = 0
+            self._cached_directory = None  # Clear cache for new directory
 
-        # Get files from directory
-        all_files = self._get_files_in_directory(directory)
+        # Get files from directory (use cache if available)
+        dir_str = str(directory)
+        if self._cached_directory == dir_str and self._cached_files:
+            all_files = self._cached_files
+            logger.debug(f"Using cached file list for {directory.name} ({len(all_files)} files)")
+        else:
+            logger.info(f"Scanning directory {directory.name}...")
+            all_files = self._get_files_in_directory(directory)
+            self._cached_directory = dir_str
+            self._cached_files = all_files
+            logger.info(f"Found {len(all_files)} files in {directory.name}")
 
         # Skip already processed files
         start_idx = self.progress.files_processed
         if start_idx >= len(all_files):
             # Directory is complete
             self.mark_directory_complete(str(directory))
+            self._cached_directory = None  # Clear cache
+            self._cached_files = []
             return self.get_next_batch()  # Recurse to get next directory
 
         # Get batch
