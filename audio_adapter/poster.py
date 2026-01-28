@@ -1,5 +1,6 @@
 """HTTP poster to send vCons to conserver endpoint."""
 
+import json
 import logging
 import requests
 from typing import Dict, List, Optional
@@ -38,7 +39,8 @@ class HttpPoster:
             url = self.url
             params = {}
             if self.ingress_lists:
-                params['ingress_lists'] = ','.join(self.ingress_lists)
+                # The /vcon endpoint accepts ingress_lists as repeated query params
+                params['ingress_lists'] = self.ingress_lists
                 logger.info(
                     f"Posting vCon {vcon.uuid} to {url} "
                     f"with ingress_lists: {', '.join(self.ingress_lists)}"
@@ -46,8 +48,12 @@ class HttpPoster:
             else:
                 logger.info(f"Posting vCon {vcon.uuid} to {url}")
 
-            # Convert vCon to JSON
-            vcon_json = vcon.to_json()
+            # Convert vCon to dict and ensure 'vcon' version field is present
+            # Use 0.3.0 for compatibility with vcon-mcp REST API
+            vcon_dict = json.loads(vcon.to_json())
+            if 'vcon' not in vcon_dict or vcon_dict['vcon'] == '0.0.1':
+                vcon_dict['vcon'] = '0.3.0'
+            vcon_json = json.dumps(vcon_dict)
 
             # POST to endpoint
             response = requests.post(

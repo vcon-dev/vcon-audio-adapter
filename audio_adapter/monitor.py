@@ -74,10 +74,10 @@ class FileSystemMonitor:
         self.observer.schedule(
             self.handler,
             str(self.watch_directory),
-            recursive=False
+            recursive=True  # Monitor subdirectories too
         )
         self.observer.start()
-        logger.info(f"Started monitoring directory: {self.watch_directory}")
+        logger.info(f"Started monitoring directory: {self.watch_directory} (recursive)")
 
     def stop(self):
         """Stop monitoring."""
@@ -87,7 +87,7 @@ class FileSystemMonitor:
             logger.info("Stopped file system monitoring")
 
     def get_existing_files(self) -> List[str]:
-        """Get list of existing audio files in the directory.
+        """Get list of existing audio files in the directory (recursive).
 
         Returns:
             List of file paths
@@ -96,10 +96,10 @@ class FileSystemMonitor:
         supported_set = set(ext.lower() for ext in self.supported_formats)
 
         try:
-            for filepath in self.watch_directory.iterdir():
-                if filepath.is_file():
-                    extension = filepath.suffix.lstrip('.').lower()
-                    if extension in supported_set:
+            # Use rglob for recursive globbing
+            for ext in supported_set:
+                for filepath in self.watch_directory.rglob(f"*.{ext}"):
+                    if filepath.is_file():
                         existing_files.append(str(filepath.absolute()))
         except Exception as e:
             logger.error(f"Error scanning directory for existing files: {e}")

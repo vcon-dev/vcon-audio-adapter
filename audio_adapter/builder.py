@@ -1,6 +1,5 @@
 """vCon builder to create vCons from audio files."""
 
-import base64
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -120,14 +119,6 @@ class VconBuilder:
             )
             file_size = file_stat.st_size
 
-            # Read audio file
-            try:
-                with open(path, 'rb') as f:
-                    audio_data = f.read()
-            except Exception as e:
-                logger.error(f"Error reading audio file {filepath}: {e}")
-                return None
-
             # Get audio duration if configured
             duration = None
             if self.extract_duration:
@@ -151,13 +142,15 @@ class VconBuilder:
             vcon.add_party(sender_party)
             vcon.add_party(receiver_party)
 
-            # Encode audio as base64
-            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-
             # Get MIME type
             mime_type = MIME_TYPES.get(extension.lower(), "audio/wav")
 
-            # Create dialog for the audio recording
+            # Create file URL for the recording
+            # Use file:// URL to reference the local file path
+            file_url = f"file://{path.absolute()}"
+
+            # Create dialog for the audio recording using URL reference
+            # instead of embedding the audio data
             dialog = Dialog(
                 type=self.dialog_type,
                 start=creation_time,
@@ -165,8 +158,7 @@ class VconBuilder:
                 originator=0,   # Sender initiated the call
                 mimetype=mime_type,
                 filename=path.name,
-                body=audio_base64,
-                encoding="base64",
+                url=file_url,
                 duration=duration,
             )
 
