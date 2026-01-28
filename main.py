@@ -8,12 +8,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Tuple
 from audio_adapter.config import Config
 from audio_adapter.parser import FilenameParser
 from audio_adapter.builder import VconBuilder
 from audio_adapter.poster import HttpPoster
 from audio_adapter.tracker import StateTracker
 from audio_adapter.monitor import FileSystemMonitor
+from audio_adapter.directory_iterator import DirectoryIterator
 
 
 # Configure logging
@@ -90,16 +92,34 @@ class AudioAdapter:
         if self.parallel_posts > 1:
             logger.info(f"Parallel posting enabled: {self.parallel_posts} workers")
 
-        # Initialize monitor based on source type
-        if config.source_type == "filesystem":
-            self.monitor = FileSystemMonitor(
-                config.watch_directory,
-                config.supported_formats,
-                self._process_file
+        # Initialize directory iterator for iterator mode
+        self.directory_iterator = None
+        if config.traverse_mode == "iterator":
+            self.directory_iterator = DirectoryIterator(
+                base_directory=config.base_directory,
+                supported_formats=config.supported_formats,
+                state_file=config.directory_state_file,
+                batch_size=config.batch_size,
+                sort_order=config.sort_order
             )
+            logger.info(f"Directory iterator mode: {config.base_directory}")
+            stats = self.directory_iterator.get_statistics()
+            logger.info(
+                f"Progress: {stats['completed_directories']}/{stats['total_directories']} "
+                f"directories completed, {stats['pending_directories']} pending"
+            )
+
+        # Initialize monitor based on source type (for single mode or watching)
+        self.monitor = None
+        if config.source_type == "filesystem":
+            watch_dir = config.watch_directory if config.traverse_mode == "single" else None
+            if watch_dir:
+                self.monitor = FileSystemMonitor(
+                    watch_dir,
+                    config.supported_formats,
+                    self._process_file
+                )
         elif config.source_type == "s3":
-            # S3 monitor would be imported and initialized here
-            # For now, raise an error as S3 support needs additional implementation
             raise NotImplementedError(
                 "S3 support not yet implemented. "
                 "Copy s3_monitor.py from vcon-fadapter if needed."
@@ -156,30 +176,25 @@ class AudioAdapter:
             self.tracker.mark_processed(filepath, vcon.uuid, "failed")
             logger.error(f"Failed to post vCon for: {filepath}")
 
-    def process_existing_files(self):
-        """Process existing files in the watch directory."""
-        if not self.config.process_existing:
-            logger.info("Skipping existing files (PROCESS_EXISTING=false)")
-            return
+    def _process_batch(self, files: list) -> Tuple[int, int]:
+        """Process a batch of files.
 
-        logger.info("Processing existing files...")
-        existing_files = self.monitor.get_existing_files(max_files=self.config.max_files)
+        Args:
+            files: List of file paths to process
 
-        if self.config.max_files > 0:
-            logger.info(f"Limited to {self.config.max_files} files")
-
+        Returns:
+            Tuple of (success_count, error_count)
+        """
         start_time = time.time()
+        success_count = 0
+        error_count = 0
 
         if self.parallel_posts > 1:
             # Process files in parallel using thread pool
-            logger.info(f"Processing {len(existing_files)} files with {self.parallel_posts} parallel workers")
-            success_count = 0
-            error_count = 0
-
             with ThreadPoolExecutor(max_workers=self.parallel_posts) as executor:
                 futures = {
                     executor.submit(self._process_file, filepath): filepath
-                    for filepath in existing_files
+                    for filepath in files
                 }
 
                 for future in as_completed(futures):
@@ -190,55 +205,143 @@ class AudioAdapter:
                     except Exception as e:
                         error_count += 1
                         logger.error(f"Error processing {filepath}: {e}")
-
-            elapsed = time.time() - start_time
-            rate = len(existing_files) / elapsed if elapsed > 0 else 0
-            logger.info(
-                f"Finished processing {len(existing_files)} files "
-                f"({success_count} success, {error_count} errors) "
-                f"in {elapsed:.1f}s ({rate:.1f} files/sec)"
-            )
         else:
             # Process files sequentially
-            for filepath in existing_files:
-                self._process_file(filepath)
+            for filepath in files:
+                try:
+                    self._process_file(filepath)
+                    success_count += 1
+                except Exception as e:
+                    error_count += 1
+                    logger.error(f"Error processing {filepath}: {e}")
 
-            elapsed = time.time() - start_time
-            rate = len(existing_files) / elapsed if elapsed > 0 else 0
-            logger.info(
-                f"Finished processing {len(existing_files)} files "
-                f"in {elapsed:.1f}s ({rate:.1f} files/sec)"
-            )
+        elapsed = time.time() - start_time
+        rate = len(files) / elapsed if elapsed > 0 else 0
+        logger.info(
+            f"Batch complete: {len(files)} files "
+            f"({success_count} success, {error_count} errors) "
+            f"in {elapsed:.1f}s ({rate:.1f} files/sec)"
+        )
+
+        return success_count, error_count
+
+    def process_with_iterator(self):
+        """Process files using directory iterator with checkpointing."""
+        if not self.directory_iterator:
+            logger.error("Directory iterator not initialized")
+            return
+
+        logger.info("Starting directory iterator processing...")
+        total_success = 0
+        total_errors = 0
+        total_start = time.time()
+
+        while self.running:
+            # Get next batch
+            directory, files = self.directory_iterator.get_next_batch()
+
+            if directory is None:
+                logger.info("All directories processed!")
+                break
+
+            if not files:
+                continue
+
+            logger.info(f"Processing directory: {directory} ({len(files)} files)")
+
+            # Process the batch
+            success, errors = self._process_batch(files)
+            total_success += success
+            total_errors += errors
+
+            # Checkpoint progress
+            self.directory_iterator.mark_files_processed(len(files), files[-1] if files else None)
+
+            # Check if directory is complete
+            stats = self.directory_iterator.get_statistics()
+            if stats['current_directory'] is None:
+                logger.info(
+                    f"Progress: {stats['completed_directories']}/{stats['total_directories']} "
+                    f"directories completed"
+                )
+
+        total_elapsed = time.time() - total_start
+        total_files = total_success + total_errors
+        rate = total_files / total_elapsed if total_elapsed > 0 else 0
+
+        logger.info(
+            f"Iterator processing complete: {total_files} total files "
+            f"({total_success} success, {total_errors} errors) "
+            f"in {total_elapsed:.1f}s ({rate:.1f} files/sec overall)"
+        )
+
+        # Print final statistics
+        stats = self.directory_iterator.get_statistics()
+        logger.info(
+            f"Final stats: {stats['completed_directories']}/{stats['total_directories']} "
+            f"directories completed"
+        )
+
+    def process_existing_files(self):
+        """Process existing files in the watch directory (single mode)."""
+        if not self.config.process_existing:
+            logger.info("Skipping existing files (PROCESS_EXISTING=false)")
+            return
+
+        if not self.monitor:
+            logger.warning("No monitor configured for single mode")
+            return
+
+        logger.info("Processing existing files...")
+        existing_files = self.monitor.get_existing_files(max_files=self.config.max_files)
+
+        if self.config.max_files > 0:
+            logger.info(f"Limited to {self.config.max_files} files")
+
+        if not existing_files:
+            logger.info("No existing files found")
+            return
+
+        logger.info(f"Processing {len(existing_files)} files with {self.parallel_posts} parallel workers")
+        success, errors = self._process_batch(existing_files)
+
+        logger.info(f"Finished processing existing files: {success} success, {errors} errors")
 
     def start(self):
         """Start the adapter."""
         logger.info("Starting audio file vCon adapter...")
-
-        # Process existing files first
-        self.process_existing_files()
-
-        # Start monitoring for new files
-        self.monitor.start()
         self.running = True
 
-        logger.info("Adapter is running. Press Ctrl+C to stop.")
+        if self.config.traverse_mode == "iterator":
+            # Iterator mode: process directories with checkpointing
+            self.process_with_iterator()
+        else:
+            # Single mode: process existing files then monitor
+            self.process_existing_files()
 
-        # Keep running until interrupted
-        try:
-            while self.running:
-                import time
-                time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("Received interrupt signal")
-        finally:
-            self.stop()
+            # Start monitoring for new files if monitor is configured
+            if self.monitor:
+                self.monitor.start()
+                logger.info("Adapter is running. Press Ctrl+C to stop.")
+
+                # Keep running until interrupted
+                try:
+                    while self.running:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    logger.info("Received interrupt signal")
+                finally:
+                    self.stop()
+            else:
+                logger.info("Processing complete (no monitoring configured)")
 
     def stop(self):
         """Stop the adapter."""
         if self.running:
             logger.info("Stopping adapter...")
             self.running = False
-            self.monitor.stop()
+            if self.monitor:
+                self.monitor.stop()
             logger.info("Adapter stopped")
 
 

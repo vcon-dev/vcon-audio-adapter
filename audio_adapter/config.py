@@ -22,10 +22,9 @@ class Config:
         if self.source_type not in ("filesystem", "s3"):
             raise ValueError(f"SOURCE_TYPE must be 'filesystem' or 's3', got: {self.source_type}")
 
-        # Filesystem settings (required when SOURCE_TYPE=filesystem)
+        # Filesystem settings (required when SOURCE_TYPE=filesystem and TRAVERSE_MODE=single)
         self.watch_directory = os.getenv("WATCH_DIRECTORY")
-        if self.source_type == "filesystem" and not self.watch_directory:
-            raise ValueError("WATCH_DIRECTORY is required when SOURCE_TYPE=filesystem")
+        # Note: validation deferred until after traverse_mode is loaded
 
         # S3 settings (required when SOURCE_TYPE=s3)
         self.s3_bucket_name = os.getenv("S3_BUCKET_NAME")
@@ -112,8 +111,35 @@ class Config:
         extract_duration_str = os.getenv("EXTRACT_DURATION", "true").lower()
         self.extract_duration = extract_duration_str in ("true", "1", "yes")
 
-        # Maximum files to process (0 = unlimited)
+        # Maximum files to process per batch (0 = unlimited)
         self.max_files = int(os.getenv("MAX_FILES", "0"))
+
+        # Directory traversal mode: "single" or "iterator"
+        # - single: process only WATCH_DIRECTORY (original behavior)
+        # - iterator: traverse date/hour subdirectories with checkpointing
+        self.traverse_mode = os.getenv("TRAVERSE_MODE", "single").lower()
+        if self.traverse_mode not in ("single", "iterator"):
+            raise ValueError(f"TRAVERSE_MODE must be 'single' or 'iterator', got: {self.traverse_mode}")
+
+        # For iterator mode: base directory containing date subdirectories
+        self.base_directory = os.getenv("BASE_DIRECTORY", "")
+        if self.traverse_mode == "iterator" and not self.base_directory:
+            raise ValueError("BASE_DIRECTORY is required when TRAVERSE_MODE=iterator")
+
+        # Batch size for iterator mode (checkpoint after this many files)
+        self.batch_size = int(os.getenv("BATCH_SIZE", "1000"))
+
+        # Directory progress state file for iterator mode
+        self.directory_state_file = os.getenv("DIRECTORY_STATE_FILE", ".directory_progress.json")
+
+        # Sort order for directory processing: "oldest_first" or "newest_first"
+        self.sort_order = os.getenv("SORT_ORDER", "oldest_first").lower()
+        if self.sort_order not in ("oldest_first", "newest_first"):
+            raise ValueError(f"SORT_ORDER must be 'oldest_first' or 'newest_first', got: {self.sort_order}")
+
+        # Validate WATCH_DIRECTORY for single mode
+        if self.source_type == "filesystem" and self.traverse_mode == "single" and not self.watch_directory:
+            raise ValueError("WATCH_DIRECTORY is required when SOURCE_TYPE=filesystem and TRAVERSE_MODE=single")
 
         # Parallel posting configuration
         # Number of parallel posting workers (1 = sequential, >1 = parallel)
