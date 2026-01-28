@@ -91,15 +91,17 @@ class VconBuilder:
         filepath: str,
         sender: str,
         receiver: str,
-        extension: str
+        extension: str,
+        trunk: Optional[str] = None
     ) -> Optional[Vcon]:
         """Build a vCon from an audio file.
 
         Args:
             filepath: Path to the audio file
-            sender: Sender phone number
-            receiver: Receiver phone number
+            sender: Sender/originating phone number (caller)
+            receiver: Receiver/destination phone number (callee)
             extension: File extension
+            trunk: Optional trunk/gateway identifier
 
         Returns:
             Vcon object or None if building fails
@@ -169,8 +171,10 @@ class VconBuilder:
             vcon.add_tag("source", "audio_adapter")
             vcon.add_tag("original_filename", path.name)
             vcon.add_tag("file_size", str(file_size))
-            vcon.add_tag("sender", sender)
-            vcon.add_tag("receiver", receiver)
+            if trunk:
+                vcon.add_tag("trunk", trunk)
+            vcon.add_tag("originating", sender)
+            vcon.add_tag("destination", receiver)
             if duration:
                 vcon.add_tag("duration_seconds", f"{duration:.2f}")
 

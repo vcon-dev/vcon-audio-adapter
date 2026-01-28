@@ -4,6 +4,9 @@
 import sys
 import signal
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from audio_adapter.config import Config
 from audio_adapter.parser import FilenameParser
@@ -19,6 +22,42 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+class RateLimiter:
+    """Token bucket rate limiter for controlling request throughput."""
+
+    def __init__(self, rate: float):
+        """Initialize rate limiter.
+
+        Args:
+            rate: Maximum requests per second (0 = no limit)
+        """
+        self.rate = rate
+        self.tokens = 1.0
+        self.last_time = time.monotonic()
+        self.lock = threading.Lock()
+
+    def acquire(self):
+        """Acquire a token, blocking if necessary to respect rate limit."""
+        if self.rate <= 0:
+            return  # No rate limiting
+
+        with self.lock:
+            now = time.monotonic()
+            elapsed = now - self.last_time
+            self.last_time = now
+
+            # Add tokens based on elapsed time
+            self.tokens = min(1.0, self.tokens + elapsed * self.rate)
+
+            if self.tokens < 1.0:
+                # Need to wait for token
+                wait_time = (1.0 - self.tokens) / self.rate
+                time.sleep(wait_time)
+                self.tokens = 0.0
+            else:
+                self.tokens -= 1.0
 
 
 class AudioAdapter:
@@ -40,6 +79,16 @@ class AudioAdapter:
             config.ingress_lists
         )
         self.tracker = StateTracker(config.state_file)
+
+        # Initialize rate limiter (0 = no limit)
+        self.rate_limiter = RateLimiter(config.rate_limit)
+        if config.rate_limit > 0:
+            logger.info(f"Rate limiting enabled: {config.rate_limit} requests/sec")
+
+        # Initialize thread pool for parallel posting
+        self.parallel_posts = config.parallel_posts
+        if self.parallel_posts > 1:
+            logger.info(f"Parallel posting enabled: {self.parallel_posts} workers")
 
         # Initialize monitor based on source type
         if config.source_type == "filesystem":
@@ -77,13 +126,16 @@ class AudioAdapter:
             logger.warning(f"Could not parse filename: {filepath}")
             return
 
-        sender, receiver, extension = parsed
+        trunk, sender, receiver, extension = parsed
 
         # Build vCon
-        vcon = self.builder.build(filepath, sender, receiver, extension)
+        vcon = self.builder.build(filepath, sender, receiver, extension, trunk=trunk)
         if not vcon:
             logger.error(f"Failed to build vCon from: {filepath}")
             return
+
+        # Apply rate limiting before posting
+        self.rate_limiter.acquire()
 
         # Post to conserver
         success = self.poster.post(vcon)
@@ -111,12 +163,52 @@ class AudioAdapter:
             return
 
         logger.info("Processing existing files...")
-        existing_files = self.monitor.get_existing_files()
+        existing_files = self.monitor.get_existing_files(max_files=self.config.max_files)
 
-        for filepath in existing_files:
-            self._process_file(filepath)
+        if self.config.max_files > 0:
+            logger.info(f"Limited to {self.config.max_files} files")
 
-        logger.info(f"Finished processing {len(existing_files)} existing files")
+        start_time = time.time()
+
+        if self.parallel_posts > 1:
+            # Process files in parallel using thread pool
+            logger.info(f"Processing {len(existing_files)} files with {self.parallel_posts} parallel workers")
+            success_count = 0
+            error_count = 0
+
+            with ThreadPoolExecutor(max_workers=self.parallel_posts) as executor:
+                futures = {
+                    executor.submit(self._process_file, filepath): filepath
+                    for filepath in existing_files
+                }
+
+                for future in as_completed(futures):
+                    filepath = futures[future]
+                    try:
+                        future.result()
+                        success_count += 1
+                    except Exception as e:
+                        error_count += 1
+                        logger.error(f"Error processing {filepath}: {e}")
+
+            elapsed = time.time() - start_time
+            rate = len(existing_files) / elapsed if elapsed > 0 else 0
+            logger.info(
+                f"Finished processing {len(existing_files)} files "
+                f"({success_count} success, {error_count} errors) "
+                f"in {elapsed:.1f}s ({rate:.1f} files/sec)"
+            )
+        else:
+            # Process files sequentially
+            for filepath in existing_files:
+                self._process_file(filepath)
+
+            elapsed = time.time() - start_time
+            rate = len(existing_files) / elapsed if elapsed > 0 else 0
+            logger.info(
+                f"Finished processing {len(existing_files)} files "
+                f"in {elapsed:.1f}s ({rate:.1f} files/sec)"
+            )
 
     def start(self):
         """Start the adapter."""

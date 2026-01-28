@@ -86,8 +86,11 @@ class FileSystemMonitor:
             self.observer.join()
             logger.info("Stopped file system monitoring")
 
-    def get_existing_files(self) -> List[str]:
-        """Get list of existing audio files in the directory (recursive).
+    def get_existing_files(self, max_files: int = 0) -> List[str]:
+        """Get list of existing audio files in the directory (non-recursive).
+
+        Args:
+            max_files: Maximum files to return (0 = unlimited)
 
         Returns:
             List of file paths
@@ -96,11 +99,15 @@ class FileSystemMonitor:
         supported_set = set(ext.lower() for ext in self.supported_formats)
 
         try:
-            # Use rglob for recursive globbing
+            # Use glob for non-recursive (faster for flat directories)
             for ext in supported_set:
-                for filepath in self.watch_directory.rglob(f"*.{ext}"):
+                for filepath in self.watch_directory.glob(f"*.{ext}"):
                     if filepath.is_file():
                         existing_files.append(str(filepath.absolute()))
+                        if max_files > 0 and len(existing_files) >= max_files:
+                            break
+                if max_files > 0 and len(existing_files) >= max_files:
+                    break
         except Exception as e:
             logger.error(f"Error scanning directory for existing files: {e}")
 

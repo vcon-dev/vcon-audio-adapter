@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, Optional
 from datetime import datetime
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class StateTracker:
-    """Tracks processed files to avoid duplicates."""
+    """Tracks processed files to avoid duplicates. Thread-safe for parallel processing."""
 
     def __init__(self, state_file: str):
         """Initialize state tracker.
@@ -21,6 +22,7 @@ class StateTracker:
         """
         self.state_file = Path(state_file)
         self.state: Dict[str, Dict] = {}
+        self._lock = threading.Lock()
         self._load()
 
     def _load(self):
@@ -55,7 +57,8 @@ class StateTracker:
             True if file has been processed
         """
         identifier = s3_key if s3_key else filepath
-        return identifier in self.state
+        with self._lock:
+            return identifier in self.state
 
     def mark_processed(
         self,
@@ -85,8 +88,9 @@ class StateTracker:
         if etag:
             entry["etag"] = etag
 
-        self.state[identifier] = entry
-        self._save()
+        with self._lock:
+            self.state[identifier] = entry
+            self._save()
         logger.debug(f"Marked {identifier} as processed (status: {status})")
 
     def get_vcon_uuid(self, filepath: str, s3_key: Optional[str] = None) -> Optional[str]:
@@ -100,8 +104,9 @@ class StateTracker:
             vCon UUID or None if not processed
         """
         identifier = s3_key if s3_key else filepath
-        entry = self.state.get(identifier)
-        return entry.get("vcon_uuid") if entry else None
+        with self._lock:
+            entry = self.state.get(identifier)
+            return entry.get("vcon_uuid") if entry else None
 
     def is_s3_object_processed(self, s3_key: str, etag: Optional[str] = None) -> bool:
         """Check if S3 object has been processed.
@@ -113,12 +118,13 @@ class StateTracker:
         Returns:
             True if object has been processed with matching ETag (if provided)
         """
-        if s3_key not in self.state:
-            return False
+        with self._lock:
+            if s3_key not in self.state:
+                return False
 
-        # If ETag provided, check if it matches
-        if etag:
-            stored_etag = self.state[s3_key].get("etag")
-            return stored_etag == etag
+            # If ETag provided, check if it matches
+            if etag:
+                stored_etag = self.state[s3_key].get("etag")
+                return stored_etag == etag
 
-        return True
+            return True

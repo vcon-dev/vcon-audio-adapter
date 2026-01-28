@@ -112,6 +112,18 @@ class Config:
         extract_duration_str = os.getenv("EXTRACT_DURATION", "true").lower()
         self.extract_duration = extract_duration_str in ("true", "1", "yes")
 
+        # Maximum files to process (0 = unlimited)
+        self.max_files = int(os.getenv("MAX_FILES", "0"))
+
+        # Parallel posting configuration
+        # Number of parallel posting workers (1 = sequential, >1 = parallel)
+        self.parallel_posts = int(os.getenv("PARALLEL_POSTS", "1"))
+        if self.parallel_posts < 1:
+            raise ValueError(f"PARALLEL_POSTS must be >= 1, got: {self.parallel_posts}")
+
+        # Rate limiting (requests per second, 0 = no limit)
+        self.rate_limit = float(os.getenv("RATE_LIMIT", "0"))
+
     def get_headers(self) -> Dict[str, str]:
         """Get HTTP headers for conserver requests."""
         headers = {"Content-Type": "application/json"}
