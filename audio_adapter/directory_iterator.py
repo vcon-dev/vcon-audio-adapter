@@ -62,6 +62,8 @@ class DirectoryIterator:
         # Cache for current directory's file list (avoids re-scanning NFS)
         self._cached_directory: Optional[str] = None
         self._cached_files: List[str] = []
+        # Cache for discovered directories (avoids re-walking NAS tree every batch)
+        self._all_directories: Optional[List[Path]] = None
 
     def _load_progress(self) -> DirectoryProgress:
         """Load progress from checkpoint file."""
@@ -172,9 +174,10 @@ class DirectoryIterator:
         Returns:
             List of directory paths still needing processing
         """
-        all_dirs = self._discover_directories()
+        if self._all_directories is None:
+            self._all_directories = self._discover_directories()
         completed = set(self.progress.completed_directories)
-        return [d for d in all_dirs if str(d) not in completed]
+        return [d for d in self._all_directories if str(d) not in completed]
 
     def get_next_batch(self) -> Tuple[Optional[str], List[str]]:
         """Get the next batch of files to process.
@@ -270,11 +273,12 @@ class DirectoryIterator:
         Returns:
             Dictionary with progress statistics
         """
-        all_dirs = self._discover_directories()
+        if self._all_directories is None:
+            self._all_directories = self._discover_directories()
         pending = self.get_pending_directories()
 
         return {
-            "total_directories": len(all_dirs),
+            "total_directories": len(self._all_directories),
             "completed_directories": len(self.progress.completed_directories),
             "pending_directories": len(pending),
             "current_directory": self.progress.current_directory,

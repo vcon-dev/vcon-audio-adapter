@@ -150,6 +150,15 @@ class Config:
         # Rate limiting (requests per second, 0 = no limit)
         self.rate_limit = float(os.getenv("RATE_LIMIT", "0"))
 
+        # Backpressure configuration
+        self.backpressure_url = os.getenv("BACKPRESSURE_URL", "")
+        if not self.backpressure_url and self.conserver_url:
+            base = self.conserver_url.rsplit("/", 1)[0]
+            self.backpressure_url = f"{base}/stats/queue"
+        self.backpressure_queue = os.getenv("BACKPRESSURE_QUEUE", "ingress:transcribe")
+        self.backpressure_threshold = int(os.getenv("BACKPRESSURE_THRESHOLD", "0"))
+        self.backpressure_poll_interval = float(os.getenv("BACKPRESSURE_POLL_INTERVAL", "5"))
+
     def get_headers(self) -> Dict[str, str]:
         """Get HTTP headers for conserver requests."""
         headers = {"Content-Type": "application/json"}

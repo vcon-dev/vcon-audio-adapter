@@ -6,6 +6,7 @@ import signal
 import logging
 import threading
 import time
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Tuple
@@ -225,6 +226,34 @@ class AudioAdapter:
 
         return success_count, error_count
 
+    def _wait_for_backpressure(self):
+        """Block until queue depth drops below backpressure threshold."""
+        threshold = self.config.backpressure_threshold
+        if threshold <= 0 or not self.config.backpressure_url:
+            return
+        url = self.config.backpressure_url
+        params = {"list_name": self.config.backpressure_queue}
+        poll_interval = self.config.backpressure_poll_interval
+        waiting = False
+        while self.running:
+            try:
+                resp = requests.get(url, params=params, timeout=5)
+                resp.raise_for_status()
+                depth = resp.json().get("depth", 0)
+            except Exception as e:
+                logger.warning(f"Backpressure check failed: {e}")
+                if waiting:
+                    logger.info("Backpressure check unreachable, resuming")
+                return
+            if depth < threshold:
+                if waiting:
+                    logger.info(f"Backpressure released: depth {depth} < {threshold}, resuming")
+                return
+            if not waiting:
+                waiting = True
+                logger.info(f"Backpressure active: depth {depth} >= {threshold}, waiting (poll every {poll_interval}s)")
+            time.sleep(poll_interval)
+
     def process_with_iterator(self):
         """Process files using directory iterator with checkpointing."""
         if not self.directory_iterator:
@@ -246,6 +275,10 @@ class AudioAdapter:
 
             if not files:
                 continue
+
+            self._wait_for_backpressure()
+            if not self.running:
+                break
 
             logger.info(f"Processing directory: {directory} ({len(files)} files)")
 
