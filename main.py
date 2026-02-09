@@ -216,6 +216,9 @@ class AudioAdapter:
                     error_count += 1
                     logger.error(f"Error processing {filepath}: {e}")
 
+        # Flush tracker state to disk at end of batch
+        self.tracker.flush()
+
         elapsed = time.time() - start_time
         rate = len(files) / elapsed if elapsed > 0 else 0
         logger.info(

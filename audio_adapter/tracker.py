@@ -14,15 +14,18 @@ logger = logging.getLogger(__name__)
 class StateTracker:
     """Tracks processed files to avoid duplicates. Thread-safe for parallel processing."""
 
-    def __init__(self, state_file: str):
+    def __init__(self, state_file: str, save_interval: int = 100):
         """Initialize state tracker.
 
         Args:
             state_file: Path to JSON file storing state
+            save_interval: Save to disk every N mark_processed calls (0 = every call)
         """
         self.state_file = Path(state_file)
         self.state: Dict[str, Dict] = {}
         self._lock = threading.Lock()
+        self._save_interval = save_interval
+        self._dirty_count = 0
         self._load()
 
     def _load(self):
@@ -90,8 +93,18 @@ class StateTracker:
 
         with self._lock:
             self.state[identifier] = entry
-            self._save()
+            self._dirty_count += 1
+            if self._save_interval <= 0 or self._dirty_count >= self._save_interval:
+                self._save()
+                self._dirty_count = 0
         logger.debug(f"Marked {identifier} as processed (status: {status})")
+
+    def flush(self):
+        """Force save any pending state changes to disk."""
+        with self._lock:
+            if self._dirty_count > 0:
+                self._save()
+                self._dirty_count = 0
 
     def get_vcon_uuid(self, filepath: str, s3_key: Optional[str] = None) -> Optional[str]:
         """Get vCon UUID for a processed file.
