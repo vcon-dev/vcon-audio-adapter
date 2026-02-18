@@ -16,7 +16,7 @@ from audio_adapter.builder import VconBuilder
 from audio_adapter.poster import HttpPoster
 from audio_adapter.tracker import StateTracker
 from audio_adapter.monitor import FileSystemMonitor
-from audio_adapter.directory_iterator import DirectoryIterator
+from audio_adapter.directory_iterator import DirectoryIterator, FileListIterator
 
 
 # Configure logging
@@ -63,6 +63,24 @@ class RateLimiter:
                 self.tokens -= 1.0
 
 
+class _NullTracker:
+    """No-op state tracker for filelist mode.
+
+    Filelist mode uses position-based checkpointing in FileListIterator,
+    so per-file state tracking is unnecessary. This avoids 100MB+ JSON
+    state files when processing millions of files.
+    """
+
+    def is_processed(self, filepath, s3_key=None):
+        return False
+
+    def mark_processed(self, filepath, vcon_uuid, status="success", s3_key=None, etag=None):
+        pass
+
+    def flush(self):
+        pass
+
+
 class AudioAdapter:
     """Main adapter class that orchestrates all components."""
 
@@ -93,7 +111,7 @@ class AudioAdapter:
         if self.parallel_posts > 1:
             logger.info(f"Parallel posting enabled: {self.parallel_posts} workers")
 
-        # Initialize directory iterator for iterator mode
+        # Initialize directory iterator for iterator/filelist mode
         self.directory_iterator = None
         if config.traverse_mode == "iterator":
             self.directory_iterator = DirectoryIterator(
@@ -104,11 +122,20 @@ class AudioAdapter:
                 sort_order=config.sort_order
             )
             logger.info(f"Directory iterator mode: {config.base_directory}")
-            stats = self.directory_iterator.get_statistics()
             logger.info(
-                f"Progress: {stats['completed_directories']}/{stats['total_directories']} "
-                f"directories completed, {stats['pending_directories']} pending"
+                f"Resumed with {len(self.directory_iterator.progress.completed_directories)} "
+                f"directories already completed (lazy discovery enabled)"
             )
+        elif config.traverse_mode == "filelist":
+            self.directory_iterator = FileListIterator(
+                file_list_path=config.file_list,
+                state_file=config.directory_state_file,
+                batch_size=config.batch_size,
+            )
+            logger.info(f"Filelist mode: {config.file_list}")
+            # Use a no-op tracker to avoid massive state files — position
+            # checkpointing in FileListIterator handles resume.
+            self.tracker = _NullTracker()
 
         # Initialize monitor based on source type (for single mode or watching)
         self.monitor = None
@@ -130,22 +157,25 @@ class AudioAdapter:
 
         self.running = False
 
-    def _process_file(self, filepath: str):
+    def _process_file(self, filepath: str) -> str:
         """Process a single audio file from filesystem.
 
         Args:
             filepath: Path to the audio file
+
+        Returns:
+            "success", "skipped", or "error"
         """
         # Check if already processed
         if self.tracker.is_processed(filepath):
             logger.debug(f"Skipping already processed file: {filepath}")
-            return
+            return "skipped"
 
         # Parse filename
         parsed = self.parser.parse(filepath)
         if not parsed:
             logger.warning(f"Could not parse filename: {filepath}")
-            return
+            return "error"
 
         trunk, sender, receiver, extension = parsed
 
@@ -153,7 +183,7 @@ class AudioAdapter:
         vcon = self.builder.build(filepath, sender, receiver, extension, trunk=trunk)
         if not vcon:
             logger.error(f"Failed to build vCon from: {filepath}")
-            return
+            return "error"
 
         # Apply rate limiting before posting
         self.rate_limiter.acquire()
@@ -172,23 +202,26 @@ class AudioAdapter:
                     logger.info(f"Deleted file after successful post: {filepath}")
                 except Exception as e:
                     logger.warning(f"Failed to delete file {filepath}: {e}")
+            return "success"
         else:
             # Mark as failed but don't delete
             self.tracker.mark_processed(filepath, vcon.uuid, "failed")
             logger.error(f"Failed to post vCon for: {filepath}")
+            return "error"
 
-    def _process_batch(self, files: list) -> Tuple[int, int]:
+    def _process_batch(self, files: list) -> Tuple[int, int, int]:
         """Process a batch of files.
 
         Args:
             files: List of file paths to process
 
         Returns:
-            Tuple of (success_count, error_count)
+            Tuple of (success_count, error_count, skip_count)
         """
         start_time = time.time()
         success_count = 0
         error_count = 0
+        skip_count = 0
 
         if self.parallel_posts > 1:
             # Process files in parallel using thread pool
@@ -201,8 +234,13 @@ class AudioAdapter:
                 for future in as_completed(futures):
                     filepath = futures[future]
                     try:
-                        future.result()
-                        success_count += 1
+                        result = future.result()
+                        if result == "skipped":
+                            skip_count += 1
+                        elif result == "error":
+                            error_count += 1
+                        else:
+                            success_count += 1
                     except Exception as e:
                         error_count += 1
                         logger.error(f"Error processing {filepath}: {e}")
@@ -210,8 +248,13 @@ class AudioAdapter:
             # Process files sequentially
             for filepath in files:
                 try:
-                    self._process_file(filepath)
-                    success_count += 1
+                    result = self._process_file(filepath)
+                    if result == "skipped":
+                        skip_count += 1
+                    elif result == "error":
+                        error_count += 1
+                    else:
+                        success_count += 1
                 except Exception as e:
                     error_count += 1
                     logger.error(f"Error processing {filepath}: {e}")
@@ -220,14 +263,15 @@ class AudioAdapter:
         self.tracker.flush()
 
         elapsed = time.time() - start_time
-        rate = len(files) / elapsed if elapsed > 0 else 0
+        posted = success_count + error_count
+        rate = posted / elapsed if elapsed > 0 and posted > 0 else 0
         logger.info(
             f"Batch complete: {len(files)} files "
-            f"({success_count} success, {error_count} errors) "
-            f"in {elapsed:.1f}s ({rate:.1f} files/sec)"
+            f"({success_count} ok, {error_count} err, {skip_count} skip) "
+            f"in {elapsed:.1f}s ({rate:.1f} posted/sec)"
         )
 
-        return success_count, error_count
+        return success_count, error_count, skip_count
 
     def _wait_for_backpressure(self):
         """Block until queue depth drops below backpressure threshold."""
@@ -266,7 +310,9 @@ class AudioAdapter:
         logger.info("Starting directory iterator processing...")
         total_success = 0
         total_errors = 0
+        total_skipped = 0
         total_start = time.time()
+        last_directory = None
 
         while self.running:
             # Get next batch
@@ -283,40 +329,49 @@ class AudioAdapter:
             if not self.running:
                 break
 
-            logger.info(f"Processing directory: {directory} ({len(files)} files)")
+            # Log when entering a new directory
+            if directory != last_directory:
+                dir_name = Path(directory).name
+                parent_name = Path(directory).parent.name
+                logger.info(f"--- {parent_name}/{dir_name} ({len(files)} files) ---")
+                last_directory = directory
 
             # Process the batch
-            success, errors = self._process_batch(files)
+            success, errors, skipped = self._process_batch(files)
             total_success += success
             total_errors += errors
+            total_skipped += skipped
 
             # Checkpoint progress
             self.directory_iterator.mark_files_processed(len(files), files[-1] if files else None)
 
-            # Check if directory is complete
+            # Running totals after each batch
+            elapsed = time.time() - total_start
+            total_posted = total_success + total_errors
+            overall_rate = total_posted / elapsed if elapsed > 0 and total_posted > 0 else 0
             stats = self.directory_iterator.get_statistics()
-            if stats['current_directory'] is None:
-                logger.info(
-                    f"Progress: {stats['completed_directories']}/{stats['total_directories']} "
-                    f"directories completed"
-                )
+
+            logger.info(
+                f">> Total posted: {total_posted} ({total_success} ok, {total_errors} err) | "
+                f"Skipped: {total_skipped} | "
+                f"{overall_rate:.1f}/s | "
+                f"{elapsed:.0f}s elapsed | "
+                f"Dirs: {stats['completed_directories']}/{stats['total_directories']}"
+            )
 
         total_elapsed = time.time() - total_start
-        total_files = total_success + total_errors
-        rate = total_files / total_elapsed if total_elapsed > 0 else 0
+        total_posted = total_success + total_errors
 
-        logger.info(
-            f"Iterator processing complete: {total_files} total files "
-            f"({total_success} success, {total_errors} errors) "
-            f"in {total_elapsed:.1f}s ({rate:.1f} files/sec overall)"
-        )
-
-        # Print final statistics
+        logger.info("=" * 60)
+        logger.info("  ALL DONE")
+        logger.info(f"  Posted:    {total_posted} ({total_success} ok, {total_errors} err)")
+        logger.info(f"  Skipped:   {total_skipped}")
+        logger.info(f"  Wall time: {total_elapsed:.0f}s ({total_elapsed/60:.1f} min)")
+        if total_posted > 0 and total_elapsed > 0:
+            logger.info(f"  Rate:      {total_posted / total_elapsed:.1f} files/s")
         stats = self.directory_iterator.get_statistics()
-        logger.info(
-            f"Final stats: {stats['completed_directories']}/{stats['total_directories']} "
-            f"directories completed"
-        )
+        logger.info(f"  Dirs:      {stats['completed_directories']}/{stats['total_directories']}")
+        logger.info("=" * 60)
 
     def process_existing_files(self):
         """Process existing files in the watch directory (single mode)."""
@@ -339,17 +394,17 @@ class AudioAdapter:
             return
 
         logger.info(f"Processing {len(existing_files)} files with {self.parallel_posts} parallel workers")
-        success, errors = self._process_batch(existing_files)
+        success, errors, skipped = self._process_batch(existing_files)
 
-        logger.info(f"Finished processing existing files: {success} success, {errors} errors")
+        logger.info(f"Finished processing existing files: {success} ok, {errors} err, {skipped} skipped")
 
     def start(self):
         """Start the adapter."""
         logger.info("Starting audio file vCon adapter...")
         self.running = True
 
-        if self.config.traverse_mode == "iterator":
-            # Iterator mode: process directories with checkpointing
+        if self.config.traverse_mode in ("iterator", "filelist"):
+            # Iterator/filelist mode: process directories/lists with checkpointing
             self.process_with_iterator()
         else:
             # Single mode: process existing files then monitor

@@ -114,17 +114,23 @@ class Config:
         # Maximum files to process per batch (0 = unlimited)
         self.max_files = int(os.getenv("MAX_FILES", "0"))
 
-        # Directory traversal mode: "single" or "iterator"
+        # Directory traversal mode: "single", "iterator", or "filelist"
         # - single: process only WATCH_DIRECTORY (original behavior)
         # - iterator: traverse date/hour subdirectories with checkpointing
+        # - filelist: read pre-scanned file paths from a local text file (no NFS scanning)
         self.traverse_mode = os.getenv("TRAVERSE_MODE", "single").lower()
-        if self.traverse_mode not in ("single", "iterator"):
-            raise ValueError(f"TRAVERSE_MODE must be 'single' or 'iterator', got: {self.traverse_mode}")
+        if self.traverse_mode not in ("single", "iterator", "filelist"):
+            raise ValueError(f"TRAVERSE_MODE must be 'single', 'iterator', or 'filelist', got: {self.traverse_mode}")
 
         # For iterator mode: base directory containing date subdirectories
         self.base_directory = os.getenv("BASE_DIRECTORY", "")
         if self.traverse_mode == "iterator" and not self.base_directory:
             raise ValueError("BASE_DIRECTORY is required when TRAVERSE_MODE=iterator")
+
+        # For filelist mode: path to text file with one file path per line
+        self.file_list = os.getenv("FILE_LIST", "")
+        if self.traverse_mode == "filelist" and not self.file_list:
+            raise ValueError("FILE_LIST is required when TRAVERSE_MODE=filelist")
 
         # Batch size for iterator mode (checkpoint after this many files)
         self.batch_size = int(os.getenv("BATCH_SIZE", "1000"))

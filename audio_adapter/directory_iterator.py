@@ -5,6 +5,8 @@ Supports checkpointing to resume processing after interruption.
 Directory structure expected:
     {base_directory}/{date}/{hour}/*.wav
     e.g., /mnt/nas/Freeswitch1/2026-01-19/06/*.wav
+
+Also includes FileListIterator for pre-scanned file lists (no NFS scanning).
 """
 
 import json
@@ -62,8 +64,11 @@ class DirectoryIterator:
         # Cache for current directory's file list (avoids re-scanning NFS)
         self._cached_directory: Optional[str] = None
         self._cached_files: List[str] = []
-        # Cache for discovered directories (avoids re-walking NAS tree every batch)
-        self._all_directories: Optional[List[Path]] = None
+        # Lazy iterator for discovered directories (avoids walking entire NAS tree upfront)
+        self._directory_iter: Optional[Iterator[Path]] = None
+        # Directories yielded so far (for statistics and pending checks)
+        self._yielded_directories: List[Path] = []
+        self._discovery_exhausted: bool = False
 
     def _load_progress(self) -> DirectoryProgress:
         """Load progress from checkpoint file."""
@@ -90,44 +95,46 @@ class DirectoryIterator:
         except Exception as e:
             logger.error(f"Could not save progress file: {e}")
 
-    def _discover_directories(self) -> List[Path]:
-        """Discover all date/hour directories to process.
+    def _discover_directories(self) -> Iterator[Path]:
+        """Lazily discover date/hour directories one date at a time.
 
-        Returns:
-            List of directory paths sorted by date/hour
+        Yields directories as they are found instead of walking the entire
+        NAS tree upfront. This avoids a long startup delay on NFS mounts
+        with thousands of directories.
+
+        Yields:
+            Directory paths in chronological order
         """
-        directories = []
-
         if not self.base_directory.exists():
             logger.error(f"Base directory does not exist: {self.base_directory}")
-            return directories
+            return
 
-        # Find all date directories (YYYY-MM-DD format)
-        for date_dir in sorted(self.base_directory.iterdir()):
-            if not date_dir.is_dir():
+        # Get date directories (single readdir on base — fast)
+        try:
+            date_dirs = sorted(
+                (d for d in self.base_directory.iterdir()
+                 if d.is_dir() and self._is_date_directory(d.name)),
+                key=lambda p: p.name,
+                reverse=(self.sort_order == "newest_first")
+            )
+        except Exception as e:
+            logger.error(f"Error listing base directory {self.base_directory}: {e}")
+            return
+
+        # Yield hour directories one date at a time (one readdir per date)
+        for date_dir in date_dirs:
+            try:
+                hour_dirs = sorted(
+                    (d for d in date_dir.iterdir()
+                     if d.is_dir() and self._is_hour_directory(d.name)),
+                    key=lambda p: p.name,
+                    reverse=(self.sort_order == "newest_first")
+                )
+                for hour_dir in hour_dirs:
+                    yield hour_dir
+            except Exception as e:
+                logger.warning(f"Error listing date directory {date_dir}: {e}")
                 continue
-            # Check if it looks like a date directory
-            if not self._is_date_directory(date_dir.name):
-                continue
-
-            # Find hour subdirectories
-            for hour_dir in sorted(date_dir.iterdir()):
-                if not hour_dir.is_dir():
-                    continue
-                # Check if it looks like an hour directory (00-23)
-                if not self._is_hour_directory(hour_dir.name):
-                    continue
-
-                directories.append(hour_dir)
-
-        # Sort by path (which gives chronological order for YYYY-MM-DD/HH format)
-        directories.sort(key=lambda p: str(p))
-
-        if self.sort_order == "newest_first":
-            directories.reverse()
-
-        logger.info(f"Discovered {len(directories)} directories to process")
-        return directories
 
     def _is_date_directory(self, name: str) -> bool:
         """Check if directory name looks like a date (YYYY-MM-DD)."""
@@ -148,6 +155,9 @@ class DirectoryIterator:
     def _get_files_in_directory(self, directory: Path) -> List[str]:
         """Get list of audio files in a directory.
 
+        Uses os.scandir() for efficient NFS access — gets file type from
+        dirent struct without extra stat() calls per file.
+
         Args:
             directory: Directory to scan
 
@@ -156,10 +166,17 @@ class DirectoryIterator:
         """
         files = []
         try:
-            for ext in self.supported_formats:
-                for filepath in directory.glob(f"*.{ext}"):
-                    if filepath.is_file():
-                        files.append(str(filepath.absolute()))
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    name = entry.name
+                    dot = name.rfind('.')
+                    if dot < 0:
+                        continue
+                    ext = name[dot + 1:].lower()
+                    if ext in self.supported_formats:
+                        files.append(os.path.join(str(directory), name))
         except PermissionError as e:
             logger.warning(f"Permission denied accessing {directory}: {e}")
         except Exception as e:
@@ -168,46 +185,65 @@ class DirectoryIterator:
         files.sort()
         return files
 
-    def get_pending_directories(self) -> List[Path]:
-        """Get list of directories that haven't been completed.
+    def _next_pending_directory(self) -> Optional[Path]:
+        """Get the next directory that hasn't been completed.
+
+        Pulls lazily from the directory iterator, only discovering
+        new directories as needed.
 
         Returns:
-            List of directory paths still needing processing
+            Next pending directory path, or None if exhausted
         """
-        if self._all_directories is None:
-            self._all_directories = self._discover_directories()
         completed = set(self.progress.completed_directories)
-        return [d for d in self._all_directories if str(d) not in completed]
+
+        # First check if we're resuming a directory in progress
+        if self.progress.current_directory:
+            current = Path(self.progress.current_directory)
+            if str(current) not in completed:
+                return current
+
+        # Initialize the lazy iterator on first call
+        if self._directory_iter is None:
+            self._directory_iter = self._discover_directories()
+
+        # Pull from the lazy iterator until we find a pending directory
+        while not self._discovery_exhausted:
+            try:
+                directory = next(self._directory_iter)
+                self._yielded_directories.append(directory)
+                if str(directory) not in completed:
+                    return directory
+            except StopIteration:
+                self._discovery_exhausted = True
+                logger.info(
+                    f"Directory discovery complete: {len(self._yielded_directories)} total directories"
+                )
+                break
+
+        return None
 
     def get_next_batch(self) -> Tuple[Optional[str], List[str]]:
         """Get the next batch of files to process.
+
+        Discovers directories lazily — only reads the next date/hour
+        directory from NFS when the current one is exhausted.
 
         Returns:
             Tuple of (directory_path, list_of_files)
             Returns (None, []) if all directories are complete
         """
-        pending = self.get_pending_directories()
+        directory = self._next_pending_directory()
 
-        if not pending:
+        if directory is None:
             logger.info("All directories have been processed")
             return None, []
 
-        # Get current or next directory
-        if self.progress.current_directory:
-            current = Path(self.progress.current_directory)
-            if current in pending:
-                directory = current
-            else:
-                directory = pending[0]
-                self.progress.current_directory = str(directory)
-                self.progress.files_processed = 0
-                self.progress.last_file = None
-                self._cached_directory = None  # Clear cache for new directory
-        else:
-            directory = pending[0]
+        # Update progress if switching to a new directory
+        if self.progress.current_directory != str(directory):
             self.progress.current_directory = str(directory)
             self.progress.files_processed = 0
-            self._cached_directory = None  # Clear cache for new directory
+            self.progress.last_file = None
+            self._cached_directory = None
 
         # Get files from directory (use cache if available)
         dir_str = str(directory)
@@ -226,7 +262,7 @@ class DirectoryIterator:
         if start_idx >= len(all_files):
             # Directory is complete
             self.mark_directory_complete(str(directory))
-            self._cached_directory = None  # Clear cache
+            self._cached_directory = None
             self._cached_files = []
             return self.get_next_batch()  # Recurse to get next directory
 
@@ -271,16 +307,16 @@ class DirectoryIterator:
         """Get processing statistics.
 
         Returns:
-            Dictionary with progress statistics
+            Dictionary with progress statistics.
+            Note: total_directories is only known after discovery is exhausted.
         """
-        if self._all_directories is None:
-            self._all_directories = self._discover_directories()
-        pending = self.get_pending_directories()
+        discovered = len(self._yielded_directories)
+        completed = len(self.progress.completed_directories)
 
         return {
-            "total_directories": len(self._all_directories),
-            "completed_directories": len(self.progress.completed_directories),
-            "pending_directories": len(pending),
+            "total_directories": discovered if self._discovery_exhausted else f"{discovered}+",
+            "completed_directories": completed,
+            "pending_directories": (discovered - completed) if self._discovery_exhausted else "unknown",
             "current_directory": self.progress.current_directory,
             "files_in_current": self.progress.files_processed,
             "started_at": self.progress.started_at,
@@ -292,3 +328,112 @@ class DirectoryIterator:
         self.progress = DirectoryProgress(started_at=datetime.utcnow().isoformat())
         self._save_progress()
         logger.info("Progress reset")
+
+
+class FileListIterator:
+    """Reads pre-scanned file lists from a local text file.
+
+    Eliminates NFS directory scanning entirely — all file paths are read
+    from a local file (one path per line) generated by a prior `find` command.
+    Uses line-position checkpointing for efficient resume.
+    """
+
+    def __init__(
+        self,
+        file_list_path: str,
+        state_file: str = ".filelist_progress.json",
+        batch_size: int = 10000,
+    ):
+        self.file_list_path = file_list_path
+        self.state_file = Path(state_file)
+        self.batch_size = batch_size
+        self.position = 0
+        self.total_lines = 0
+        self._load_state()
+        self._count_total()
+
+    def _load_state(self):
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, 'r') as f:
+                    data = json.load(f)
+                    self.position = data.get("position", 0)
+                    logger.info(f"FileList: resuming from position {self.position}")
+            except Exception as e:
+                logger.warning(f"Could not load filelist state: {e}")
+
+    def _save_state(self):
+        try:
+            with open(self.state_file, 'w') as f:
+                json.dump({"position": self.position}, f)
+        except Exception as e:
+            logger.error(f"Could not save filelist state: {e}")
+
+    def _count_total(self):
+        """Count total lines for progress reporting."""
+        try:
+            with open(self.file_list_path, 'r') as f:
+                self.total_lines = sum(1 for _ in f)
+            logger.info(f"FileList: {self.total_lines} total files, {self.position} already processed")
+        except Exception as e:
+            logger.error(f"Could not count filelist lines: {e}")
+
+    def get_next_batch(self) -> Tuple[Optional[str], List[str]]:
+        """Get next batch of file paths from the list.
+
+        Returns:
+            Tuple of (label, file_paths). Returns (None, []) when exhausted.
+        """
+        files = []
+        try:
+            with open(self.file_list_path, 'r') as f:
+                # Seek to current position
+                for _ in range(self.position):
+                    line = f.readline()
+                    if not line:
+                        return None, []
+
+                # Read batch_size lines
+                for _ in range(self.batch_size):
+                    line = f.readline()
+                    if not line:
+                        break
+                    path = line.rstrip('\n')
+                    if path:
+                        files.append(path)
+        except Exception as e:
+            logger.error(f"Error reading filelist: {e}")
+            return None, []
+
+        if not files:
+            logger.info("FileList: all files processed")
+            return None, []
+
+        pct = (self.position / self.total_lines * 100) if self.total_lines > 0 else 0
+        label = f"filelist[{self.position}..{self.position + len(files)}] ({pct:.1f}%)"
+        logger.info(f"FileList: returning {len(files)} files at position {self.position}/{self.total_lines}")
+        return label, files
+
+    def mark_files_processed(self, count: int, last_file: Optional[str] = None):
+        self.position += count
+        self._save_state()
+
+    def mark_directory_complete(self, directory: str):
+        pass  # No-op for filelist mode
+
+    def get_statistics(self) -> dict:
+        remaining = self.total_lines - self.position
+        return {
+            "total_directories": f"{self.total_lines} files",
+            "completed_directories": self.position,
+            "pending_directories": remaining,
+            "current_directory": f"line {self.position}",
+            "files_in_current": 0,
+            "started_at": None,
+            "updated_at": None,
+        }
+
+    def reset_progress(self):
+        self.position = 0
+        self._save_state()
+        logger.info("FileList progress reset")
