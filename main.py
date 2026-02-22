@@ -4,6 +4,8 @@
 import sys
 import signal
 import logging
+import logging.handlers
+import json as json_module
 import threading
 import time
 import requests
@@ -19,11 +21,116 @@ from audio_adapter.monitor import FileSystemMonitor
 from audio_adapter.directory_iterator import DirectoryIterator, FileListIterator
 
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# ---------------------------------------------------------------------------
+# OTEL setup — optional, only activates if dependencies are installed
+# ---------------------------------------------------------------------------
+_tracer = None
+_meter = None
+_otel_available = False
+
+# Metric instruments (populated in _init_otel)
+_counter_files_processed = None
+_histogram_file_duration = None
+_histogram_batch_duration = None
+_histogram_backpressure_wait = None
+
+def _init_otel():
+    """Initialize OpenTelemetry tracing and metrics for the audio adapter."""
+    global _tracer, _meter, _otel_available
+    global _counter_files_processed, _histogram_file_duration
+    global _histogram_batch_duration, _histogram_backpressure_wait
+
+    try:
+        from opentelemetry import trace, metrics
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+        from opentelemetry.instrumentation.requests import RequestsInstrumentor
+    except ImportError:
+        return
+
+    endpoint = "http://localhost:4318"
+    resource = Resource.create({"service.name": "audio-adapter"})
+
+    # Traces
+    trace_provider = TracerProvider(resource=resource)
+    trace_provider.add_span_processor(
+        BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"))
+    )
+    trace.set_tracer_provider(trace_provider)
+    _tracer = trace.get_tracer("audio-adapter")
+
+    # Metrics
+    metric_reader = PeriodicExportingMetricReader(
+        OTLPMetricExporter(endpoint=f"{endpoint}/v1/metrics"),
+        export_interval_millis=15000,
+    )
+    metric_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+    metrics.set_meter_provider(metric_provider)
+    _meter = metrics.get_meter("audio-adapter")
+
+    _counter_files_processed = _meter.create_counter(
+        "adapter.files.processed",
+        description="Files processed by the audio adapter",
+    )
+    _histogram_file_duration = _meter.create_histogram(
+        "adapter.files.duration",
+        description="Per-file processing time in seconds",
+    )
+    _histogram_batch_duration = _meter.create_histogram(
+        "adapter.batch.duration",
+        description="Per-batch processing time in seconds",
+    )
+    _histogram_backpressure_wait = _meter.create_histogram(
+        "adapter.backpressure.wait_duration",
+        description="Time spent waiting on backpressure in seconds",
+    )
+
+    # Auto-instrument the requests library
+    RequestsInstrumentor().instrument()
+    _otel_available = True
+
+
+# ---------------------------------------------------------------------------
+# JSON structured logging with trace correlation
+# ---------------------------------------------------------------------------
+class _JsonFormatter(logging.Formatter):
+    """JSON log formatter that includes OTEL trace/span IDs when available."""
+
+    def format(self, record):
+        log_entry = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[0] is not None:
+            log_entry["exception"] = self.formatException(record.exc_info)
+
+        # Add trace correlation if OTEL is available
+        if _otel_available:
+            try:
+                from opentelemetry import trace as _trace
+                span = _trace.get_current_span()
+                ctx = span.get_span_context()
+                if ctx and ctx.trace_id:
+                    log_entry["trace_id"] = format(ctx.trace_id, "032x")
+                    log_entry["span_id"] = format(ctx.span_id, "016x")
+            except Exception:
+                pass
+
+        return json_module.dumps(log_entry)
+
+
+# Configure logging — use JSON formatter for structured output
+logging.basicConfig(level=logging.INFO)
+_handler = logging.StreamHandler()
+_handler.setFormatter(_JsonFormatter())
+logging.root.handlers = [_handler]
 logger = logging.getLogger(__name__)
 
 
@@ -166,11 +273,48 @@ class AudioAdapter:
         Returns:
             "success", "skipped", or "error"
         """
+        file_start = time.time()
+
         # Check if already processed
         if self.tracker.is_processed(filepath):
             logger.debug(f"Skipping already processed file: {filepath}")
+            if _counter_files_processed:
+                _counter_files_processed.add(1, {"status": "skipped"})
             return "skipped"
 
+        # Wrap in a span if tracing is available
+        span_cm = _tracer.start_as_current_span(
+            "adapter.process_file",
+            attributes={"file_path": filepath},
+        ) if _tracer else None
+
+        span = None
+        if span_cm:
+            span = span_cm.__enter__()
+
+        try:
+            result = self._process_file_inner(filepath)
+
+            if span:
+                span.set_attribute("result", result)
+            if _counter_files_processed:
+                _counter_files_processed.add(1, {"status": result})
+            if _histogram_file_duration:
+                _histogram_file_duration.record(time.time() - file_start, {"status": result})
+            return result
+        except Exception as e:
+            if span:
+                span.set_attribute("result", "error")
+                span.record_exception(e)
+            if _counter_files_processed:
+                _counter_files_processed.add(1, {"status": "error"})
+            raise
+        finally:
+            if span_cm:
+                span_cm.__exit__(None, None, None)
+
+    def _process_file_inner(self, filepath: str) -> str:
+        """Inner file processing logic (extracted for span wrapping)."""
         # Parse filename
         parsed = self.parser.parse(filepath)
         if not parsed:
@@ -218,6 +362,13 @@ class AudioAdapter:
         Returns:
             Tuple of (success_count, error_count, skip_count)
         """
+        batch_span_cm = _tracer.start_as_current_span(
+            "adapter.process_batch",
+            attributes={"batch_size": len(files)},
+        ) if _tracer else None
+        if batch_span_cm:
+            batch_span_cm.__enter__()
+
         start_time = time.time()
         success_count = 0
         error_count = 0
@@ -271,6 +422,11 @@ class AudioAdapter:
             f"in {elapsed:.1f}s ({rate:.1f} posted/sec)"
         )
 
+        if _histogram_batch_duration:
+            _histogram_batch_duration.record(elapsed)
+        if batch_span_cm:
+            batch_span_cm.__exit__(None, None, None)
+
         return success_count, error_count, skip_count
 
     def _wait_for_backpressure(self):
@@ -282,6 +438,15 @@ class AudioAdapter:
         params = {"list_name": self.config.backpressure_queue}
         poll_interval = self.config.backpressure_poll_interval
         waiting = False
+        wait_start = time.time()
+
+        bp_span_cm = _tracer.start_as_current_span(
+            "adapter.backpressure_wait",
+            attributes={"threshold": threshold, "queue": self.config.backpressure_queue},
+        ) if _tracer else None
+        if bp_span_cm:
+            bp_span_cm.__enter__()
+
         while self.running:
             try:
                 resp = requests.get(url, params=params, timeout=5)
@@ -291,10 +456,17 @@ class AudioAdapter:
                 logger.warning(f"Backpressure check failed: {e}")
                 if waiting:
                     logger.info("Backpressure check unreachable, resuming")
+                if bp_span_cm:
+                    bp_span_cm.__exit__(None, None, None)
                 return
             if depth < threshold:
                 if waiting:
+                    wait_duration = time.time() - wait_start
                     logger.info(f"Backpressure released: depth {depth} < {threshold}, resuming")
+                    if _histogram_backpressure_wait:
+                        _histogram_backpressure_wait.record(wait_duration)
+                if bp_span_cm:
+                    bp_span_cm.__exit__(None, None, None)
                 return
             if not waiting:
                 waiting = True
@@ -439,6 +611,13 @@ class AudioAdapter:
 def main():
     """Main entry point."""
     try:
+        # Initialize OpenTelemetry (no-op if deps not installed)
+        _init_otel()
+        if _otel_available:
+            logger.info("OpenTelemetry initialized (exporting to localhost:4318)")
+        else:
+            logger.info("OpenTelemetry dependencies not installed, running without instrumentation")
+
         # Load configuration
         config = Config()
 
