@@ -219,6 +219,54 @@ ruff check --fix .
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Observability
+
+The adapter includes optional OpenTelemetry instrumentation for traces, metrics, and structured logging. OTEL is activated automatically when the dependencies are installed; otherwise the adapter runs without instrumentation.
+
+### Enabling OTEL
+
+```bash
+pip install opentelemetry-api opentelemetry-sdk \
+  opentelemetry-exporter-otlp-proto-http \
+  opentelemetry-instrumentation-requests
+```
+
+Or install from `requirements.txt` which includes these dependencies.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP HTTP endpoint |
+| `OTEL_SERVICE_NAME` | `audio-adapter` | Service name in traces |
+
+The adapter exports via OTLP HTTP (port 4318) since it runs as a host process, not inside Docker.
+
+### Traces
+
+| Span | Description | Key Attributes |
+|------|-------------|----------------|
+| `adapter.process_batch` | Wraps each batch of files | `batch.size`, `batch.success`, `batch.errors` |
+| `adapter.process_file` | Wraps per-file processing | `file.path`, `vcon.uuid`, `file.result` |
+| `adapter.backpressure_wait` | Wraps backpressure polling | `backpressure.queue_depth` |
+
+### Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `adapter.files.processed` | Counter | Files processed, by `status` (`success`, `error`, `skipped`) |
+| `adapter.files.duration` | Histogram | Per-file processing time (seconds) |
+| `adapter.batch.duration` | Histogram | Per-batch processing time (seconds) |
+| `adapter.backpressure.wait_duration` | Histogram | Time spent waiting for backpressure relief (seconds) |
+
+### Structured Logging
+
+When OTEL is enabled, logs are emitted as JSON with `trace_id` and `span_id` fields for log-trace correlation:
+
+```json
+{"timestamp": "2026-02-23T00:00:00Z", "level": "INFO", "message": "...", "trace_id": "abc123", "span_id": "def456"}
+```
+
 ## Related Projects
 
 - [vcon-lib](https://github.com/vcon-dev/vcon-lib) - Python vCon library
