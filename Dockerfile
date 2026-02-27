@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Build arguments for version information (injected by CI/CD)
 ARG VCON_AUDIO_ADAPTER_VERSION=dev
