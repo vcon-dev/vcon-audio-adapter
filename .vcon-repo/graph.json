@@ -1,0 +1,383 @@
+{
+  "schema_version": "1.0.0",
+  "repo": "vcon-audio-adapter",
+  "repo_version": "0.1.0",
+  "archetype": "python-library",
+  "generated_at": "2026-04-16T15:15:45.496502+00:00",
+  "stats": {
+    "node_count": 58,
+    "edge_count": 1
+  },
+  "nodes": [
+    {
+      "id": "dependency:vcon",
+      "type": "dependency",
+      "name": "vcon",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:python-dotenv",
+      "type": "dependency",
+      "name": "python-dotenv",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:requests",
+      "type": "dependency",
+      "name": "requests",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:watchdog",
+      "type": "dependency",
+      "name": "watchdog",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "class:TestConfig",
+      "type": "class",
+      "name": "TestConfig",
+      "file": "tests/test_config.py",
+      "line": 8
+    },
+    {
+      "id": "class:TestFilenameParser",
+      "type": "class",
+      "name": "TestFilenameParser",
+      "file": "tests/test_parser.py",
+      "line": 8
+    },
+    {
+      "id": "class:TestStateTracker",
+      "type": "class",
+      "name": "TestStateTracker",
+      "file": "tests/test_tracker.py",
+      "line": 8
+    },
+    {
+      "id": "function:get_audio_duration",
+      "type": "function",
+      "name": "get_audio_duration",
+      "file": "audio_adapter/builder.py",
+      "line": 29
+    },
+    {
+      "id": "class:VconBuilder",
+      "type": "class",
+      "name": "VconBuilder",
+      "file": "audio_adapter/builder.py",
+      "line": 76
+    },
+    {
+      "id": "class:Config",
+      "type": "class",
+      "name": "Config",
+      "file": "audio_adapter/config.py",
+      "line": 10
+    },
+    {
+      "id": "class:DirectoryProgress",
+      "type": "class",
+      "name": "DirectoryProgress",
+      "file": "audio_adapter/directory_iterator.py",
+      "line": 24
+    },
+    {
+      "id": "class:DirectoryIterator",
+      "type": "class",
+      "name": "DirectoryIterator",
+      "file": "audio_adapter/directory_iterator.py",
+      "line": 38
+    },
+    {
+      "id": "class:FileListIterator",
+      "type": "class",
+      "name": "FileListIterator",
+      "file": "audio_adapter/directory_iterator.py",
+      "line": 333
+    },
+    {
+      "id": "class:AudioFileHandler",
+      "type": "class",
+      "name": "AudioFileHandler",
+      "file": "audio_adapter/monitor.py",
+      "line": 14
+    },
+    {
+      "id": "class:FileSystemMonitor",
+      "type": "class",
+      "name": "FileSystemMonitor",
+      "file": "audio_adapter/monitor.py",
+      "line": 46
+    },
+    {
+      "id": "class:FilenameParser",
+      "type": "class",
+      "name": "FilenameParser",
+      "file": "audio_adapter/parser.py",
+      "line": 19
+    },
+    {
+      "id": "class:HttpPoster",
+      "type": "class",
+      "name": "HttpPoster",
+      "file": "audio_adapter/poster.py",
+      "line": 13
+    },
+    {
+      "id": "class:StateTracker",
+      "type": "class",
+      "name": "StateTracker",
+      "file": "audio_adapter/tracker.py",
+      "line": 14
+    },
+    {
+      "id": "config:AWS_ACCESS_KEY_ID",
+      "type": "config",
+      "name": "AWS_ACCESS_KEY_ID",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:AWS_SECRET_ACCESS_KEY",
+      "type": "config",
+      "name": "AWS_SECRET_ACCESS_KEY",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:AWS_SESSION_TOKEN",
+      "type": "config",
+      "name": "AWS_SESSION_TOKEN",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:BACKPRESSURE_POLL_INTERVAL",
+      "type": "config",
+      "name": "BACKPRESSURE_POLL_INTERVAL",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:BACKPRESSURE_QUEUE",
+      "type": "config",
+      "name": "BACKPRESSURE_QUEUE",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:BACKPRESSURE_THRESHOLD",
+      "type": "config",
+      "name": "BACKPRESSURE_THRESHOLD",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:BACKPRESSURE_URL",
+      "type": "config",
+      "name": "BACKPRESSURE_URL",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:BASE_DIRECTORY",
+      "type": "config",
+      "name": "BASE_DIRECTORY",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:BATCH_SIZE",
+      "type": "config",
+      "name": "BATCH_SIZE",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:CONSERVER_API_TOKEN",
+      "type": "config",
+      "name": "CONSERVER_API_TOKEN",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:CONSERVER_HEADER_NAME",
+      "type": "config",
+      "name": "CONSERVER_HEADER_NAME",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:CONSERVER_URL",
+      "type": "config",
+      "name": "CONSERVER_URL",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:DELETE_AFTER_SEND",
+      "type": "config",
+      "name": "DELETE_AFTER_SEND",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:DIALOG_TYPE",
+      "type": "config",
+      "name": "DIALOG_TYPE",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:DIRECTORY_STATE_FILE",
+      "type": "config",
+      "name": "DIRECTORY_STATE_FILE",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:EXTRACT_DURATION",
+      "type": "config",
+      "name": "EXTRACT_DURATION",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:FILENAME_PATTERN",
+      "type": "config",
+      "name": "FILENAME_PATTERN",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:FILE_LIST",
+      "type": "config",
+      "name": "FILE_LIST",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:INGRESS_LISTS",
+      "type": "config",
+      "name": "INGRESS_LISTS",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:MAX_FILES",
+      "type": "config",
+      "name": "MAX_FILES",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:PARALLEL_POSTS",
+      "type": "config",
+      "name": "PARALLEL_POSTS",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:POLL_INTERVAL",
+      "type": "config",
+      "name": "POLL_INTERVAL",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:PROCESS_EXISTING",
+      "type": "config",
+      "name": "PROCESS_EXISTING",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:RATE_LIMIT",
+      "type": "config",
+      "name": "RATE_LIMIT",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:S3_BUCKET_NAME",
+      "type": "config",
+      "name": "S3_BUCKET_NAME",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:S3_DATE_FILTER",
+      "type": "config",
+      "name": "S3_DATE_FILTER",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:S3_DATE_RANGE_END",
+      "type": "config",
+      "name": "S3_DATE_RANGE_END",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:S3_DATE_RANGE_START",
+      "type": "config",
+      "name": "S3_DATE_RANGE_START",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:S3_DELETE_AFTER_SEND",
+      "type": "config",
+      "name": "S3_DELETE_AFTER_SEND",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:S3_POLL_INTERVAL",
+      "type": "config",
+      "name": "S3_POLL_INTERVAL",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:S3_PREFIX",
+      "type": "config",
+      "name": "S3_PREFIX",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:S3_REGION",
+      "type": "config",
+      "name": "S3_REGION",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:SORT_ORDER",
+      "type": "config",
+      "name": "SORT_ORDER",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:SOURCE_TYPE",
+      "type": "config",
+      "name": "SOURCE_TYPE",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:STATE_FILE",
+      "type": "config",
+      "name": "STATE_FILE",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:SUPPORTED_FORMATS",
+      "type": "config",
+      "name": "SUPPORTED_FORMATS",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:TRAVERSE_MODE",
+      "type": "config",
+      "name": "TRAVERSE_MODE",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "config:WATCH_DIRECTORY",
+      "type": "config",
+      "name": "WATCH_DIRECTORY",
+      "file": "audio_adapter/config.py"
+    },
+    {
+      "id": "artifact:docker-image",
+      "type": "artifact",
+      "name": "Docker image",
+      "file": "Dockerfile"
+    },
+    {
+      "id": "document:readme-md",
+      "type": "document",
+      "name": "README.md",
+      "file": "README.md"
+    }
+  ],
+  "edges": [
+    {
+      "from": "class:AudioFileHandler",
+      "to": "class:FileSystemEventHandler",
+      "type": "inherits"
+    }
+  ],
+  "subsystems": []
+}
