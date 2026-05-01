@@ -165,3 +165,4 @@ uv.lock
 
 # Local development
 *.local
+.venv-test/

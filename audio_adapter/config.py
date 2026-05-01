@@ -64,6 +64,14 @@ class Config:
             "x-conserver-api-token"
         )
 
+        # Optional HTTP base URL for the audio file dialog reference.
+        # When set, the adapter writes "{AUDIO_URL_BASE}/<relative-path>" into
+        # each vCon dialog instead of the legacy "file://<absolute-path>". The
+        # relative path is computed against WATCH_DIRECTORY (single mode) or
+        # BASE_DIRECTORY (iterator mode); falls back to the filename otherwise.
+        # Default empty preserves the original file:// behaviour.
+        self.url_base = os.getenv("AUDIO_URL_BASE", "").strip()
+
         # Filename pattern - configurable regex
         # Default pattern: sender_receiver.extension (e.g., 15085551212_19995551234.wav)
         default_pattern = r"(\d+)_(\d+)\.(wav|mp3|ogg|m4a|flac|aac|wma|aiff|opus)"
