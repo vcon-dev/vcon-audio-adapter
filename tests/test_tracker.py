@@ -42,6 +42,7 @@ class TestStateTracker:
         tracker = StateTracker(str(state_file))
 
         tracker.mark_processed("/path/to/file.wav", "uuid-789", "success")
+        tracker.flush()
 
         # Read file directly
         with open(state_file) as f:
@@ -96,6 +97,7 @@ class TestStateTracker:
         assert tracker.is_processed("/path/to/failed.wav") is True
 
         # Verify status in state
+        tracker.flush()
         with open(state_file) as f:
             data = json.load(f)
         assert data["/path/to/failed.wav"]["status"] == "failed"
