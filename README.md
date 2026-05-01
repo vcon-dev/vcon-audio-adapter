@@ -125,6 +125,7 @@ The pattern must have at least 2 capture groups:
 | `DELETE_AFTER_SEND` | Delete files after successful upload | `false` |
 | `STATE_FILE` | Path to state tracking file | `.audio_adapter_state.json` |
 | `POLL_INTERVAL` | File system polling interval (seconds) | `1.0` |
+| `AUDIO_URL_BASE` | HTTP(S) prefix used in the dialog `url` instead of `file://`. When set, each vCon dialog references `{AUDIO_URL_BASE}/<path-relative-to-WATCH_DIRECTORY>` (or `BASE_DIRECTORY` for iterator mode). Use this when the adapter and the conserver run in different containers/pods and need the audio fetched over HTTP. **Unset (default) preserves the legacy `file://` behaviour byte-for-byte.** | unset |
 
 ## vCon Structure
 

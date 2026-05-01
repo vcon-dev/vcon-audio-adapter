@@ -76,15 +76,28 @@ def get_audio_duration(filepath: str) -> Optional[float]:
 class VconBuilder:
     """Builds vCon objects from audio files."""
 
-    def __init__(self, dialog_type: str = "recording", extract_duration: bool = True):
+    def __init__(
+        self,
+        dialog_type: str = "recording",
+        extract_duration: bool = True,
+        url_base: Optional[str] = None,
+        url_base_path: Optional[str] = None,
+    ):
         """Initialize builder.
 
         Args:
             dialog_type: Type of dialog to create ("recording" or "audio")
             extract_duration: Whether to extract audio duration
+            url_base: Optional HTTP(S) URL prefix. When set, the dialog URL
+                becomes "{url_base}/<relative-path>" instead of file://.
+            url_base_path: Filesystem directory the relative path is computed
+                against (e.g. WATCH_DIRECTORY). Required when url_base is set
+                for files outside the directory we fall back to the filename.
         """
         self.dialog_type = dialog_type
         self.extract_duration = extract_duration
+        self.url_base = url_base or None
+        self.url_base_path = Path(url_base_path).resolve() if url_base_path else None
 
     def build(
         self,
@@ -147,9 +160,10 @@ class VconBuilder:
             # Get MIME type
             mime_type = MIME_TYPES.get(extension.lower(), "audio/wav")
 
-            # Create file URL for the recording
-            # Use file:// URL to reference the local file path
-            file_url = f"file://{path.absolute()}"
+            # Build dialog URL. Default is the legacy file:// reference; when
+            # url_base is configured, emit an HTTP(S) URL pointing at a static
+            # file server that exposes the audio directory.
+            file_url = self._build_dialog_url(path)
 
             # Create dialog for the audio recording using URL reference
             # instead of embedding the audio data
@@ -188,3 +202,22 @@ class VconBuilder:
         except Exception as e:
             logger.error(f"Error building vCon from {filepath}: {e}")
             return None
+
+    def _build_dialog_url(self, path: Path) -> str:
+        """Compose the dialog `url` field for an audio file."""
+        if not self.url_base:
+            return f"file://{path.absolute()}"
+
+        if self.url_base_path:
+            try:
+                relative = path.resolve().relative_to(self.url_base_path)
+            except ValueError:
+                logger.warning(
+                    f"File {path} is outside url_base_path {self.url_base_path}; "
+                    f"falling back to filename only"
+                )
+                relative = Path(path.name)
+        else:
+            relative = Path(path.name)
+
+        return f"{self.url_base.rstrip('/')}/{relative.as_posix()}"
