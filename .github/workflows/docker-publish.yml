@@ -1,0 +1,115 @@
+name: Build and Push Docker image
+
+# Tag scheme:
+#   - on `push: main`         → `main-<7sha>` + `latest`
+#   - on `push: tags: ['v*']` → `1.2.3`, `1.2`, `1` (semver releases) + GitHub Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+env:
+  IMAGE_NAME: public.ecr.aws/r4g1k2s3/vcon-dev/vcon-audio-adapter
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # softprops/action-gh-release on v* tag
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Compute version metadata
+        id: version
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="main-${SHORT_SHA}"
+          fi
+          {
+            echo "short_sha=${SHORT_SHA}"
+            echo "version=${VERSION}"
+            echo "build_time=${BUILD_TIME}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Amazon ECR Public
+        uses: docker/login-action@v3
+        with:
+          registry: public.ecr.aws
+          username: ${{ secrets.AWS_ACCESS_KEY }}
+          password: ${{ secrets.AWS_SECRET }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=main-${{ steps.version.outputs.short_sha }},enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VCON_AUDIO_ADAPTER_VERSION=${{ steps.version.outputs.version }}
+            VCON_AUDIO_ADAPTER_GIT_COMMIT=${{ steps.version.outputs.short_sha }}
+            VCON_AUDIO_ADAPTER_BUILD_TIME=${{ steps.version.outputs.build_time }}
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            ## Release ${{ github.ref_name }}
+
+            **Commit:** `${{ steps.version.outputs.short_sha }}`
+            **Build Time:** `${{ steps.version.outputs.build_time }}`
+
+            ### Docker image
+            ```bash
+            docker pull ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ```
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          {
+            echo "## Build Summary"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| **Version** | ${{ steps.version.outputs.version }} |"
+            echo "| **Git Commit** | ${{ steps.version.outputs.short_sha }} |"
+            echo "| **Build Time** | ${{ steps.version.outputs.build_time }} |"
+            echo ""
+            echo "### Docker Tags"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

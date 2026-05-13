@@ -199,7 +199,9 @@ class AudioAdapter:
         self.parser = FilenameParser(config.get_filename_regex())
         self.builder = VconBuilder(
             dialog_type=config.dialog_type,
-            extract_duration=config.extract_duration
+            extract_duration=config.extract_duration,
+            url_base=config.url_base,
+            url_base_path=config.watch_directory or config.base_directory or None,
         )
         self.poster = HttpPoster(
             config.conserver_url,
