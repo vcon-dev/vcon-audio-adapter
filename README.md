@@ -49,6 +49,13 @@ pip install -e .
 cp .env.example .env
 ```
 
+For iterator mode (`TRAVERSE_MODE=iterator`, traversing date/hour
+subdirectories), start from `.env.iterator.example` instead:
+
+```bash
+cp .env.iterator.example .env.iterator
+```
+
 2. **Edit `.env` with your configuration:**
 
 ```bash
@@ -126,16 +133,26 @@ The pattern must have at least 2 capture groups:
 | `STATE_FILE` | Path to state tracking file | `.audio_adapter_state.json` |
 | `POLL_INTERVAL` | File system polling interval (seconds) | `1.0` |
 | `AUDIO_URL_BASE` | HTTP(S) prefix used in the dialog `url` instead of `file://`. When set, each vCon dialog references `{AUDIO_URL_BASE}/<path-relative-to-WATCH_DIRECTORY>` (or `BASE_DIRECTORY` for iterator mode). Use this when the adapter and the conserver run in different containers/pods and need the audio fetched over HTTP. **Unset (default) preserves the legacy `file://` behaviour byte-for-byte.** | unset |
+| `LAWFUL_BASIS` | The GDPR lawful basis for processing: one of `consent`, `contract`, `legal_obligation`, `vital_interests`, `public_task`, `legitimate_interests`. **Unset (default) means no `lawful_basis` attachment is added to any vCon** (a warning is logged once); never guess or default a basis in code. | unset |
+| `LAWFUL_BASIS_PURPOSE` | Comma-separated purposes the basis was granted for (e.g. `recording,transcription`). Ignored when `LAWFUL_BASIS` is unset. | `recording` |
+| `LAWFUL_BASIS_JURISDICTION` | Optional jurisdiction the basis applies in (e.g. `US-MA`). | unset |
+| `LAWFUL_BASIS_EXPIRATION` | Optional ISO 8601 expiration timestamp for the basis. | unset |
+| `LAWFUL_BASIS_PROOF_MECHANISM` | Optional mechanism type recording how the basis was established (e.g. `external_system`). | unset |
+| `LAWFUL_BASIS_PROOF_DESCRIPTION` | Optional free-text description of the proof mechanism. | unset |
 
 ## vCon Structure
 
-The adapter creates vCons with the following structure:
+The adapter builds vCons against `"vcon": "0.4.0"` (draft-ietf-vcon-vcon-core-02).
+Audio is referenced by URL (`file://` by default, or `AUDIO_URL_BASE` +
+relative path), not embedded, so the dialog carries `url` rather than an
+inline `body`. Tags and the optional lawful-basis record are `attachments`,
+each with a string `body`, per the core spec:
 
 ```json
 {
-  "vcon": "0.0.1",
+  "vcon": "0.4.0",
   "uuid": "generated-uuid",
-  "created_at": "2024-01-15T10:30:00Z",
+  "created_at": "2024-01-15T10:30:00+00:00",
   "parties": [
     {"tel": "15085551212"},
     {"tel": "19995551234"}
@@ -143,25 +160,49 @@ The adapter creates vCons with the following structure:
   "dialog": [
     {
       "type": "recording",
-      "start": "2024-01-15T10:30:00Z",
+      "start": "2024-01-15T10:30:00+00:00",
       "parties": [0, 1],
       "originator": 0,
-      "mimetype": "audio/wav",
+      "mediatype": "audio/wav",
       "filename": "15085551212_19995551234.wav",
-      "body": "base64-encoded-audio-data",
-      "encoding": "base64",
+      "url": "file:///path/to/15085551212_19995551234.wav",
       "duration": 125.5
     }
   ],
-  "tags": {
-    "source": "audio_adapter",
-    "original_filename": "15085551212_19995551234.wav",
-    "sender": "15085551212",
-    "receiver": "19995551234",
-    "duration_seconds": "125.50"
-  }
+  "attachments": [
+    {
+      "purpose": "tags",
+      "start": "2024-01-15T10:30:00+00:00",
+      "party": 0,
+      "dialog": 0,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": "[\"source:audio_adapter\", \"original_filename:15085551212_19995551234.wav\", \"originating:15085551212\", \"destination:19995551234\", \"duration_seconds:125.50\"]"
+    },
+    {
+      "purpose": "lawful_basis",
+      "start": "2024-01-15T10:30:00+00:00",
+      "party": 0,
+      "dialog": 0,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": "{\"lawful_basis\": \"consent\", \"purpose_grants\": [{\"purpose\": \"recording\", \"granted\": true, \"granted_at\": \"2024-01-15T10:30:00+00:00\"}]}"
+    }
+  ],
+  "extensions": ["lawful_basis"]
 }
 ```
+
+The `lawful_basis` attachment is only added when `LAWFUL_BASIS` is set (see
+the configuration reference above); it is never inferred or defaulted.
+`granted_at` is the vCon's own `created_at` (the file's creation time) --
+the adapter has no earlier signal to attest to at ingest time.
+
+Note: `HttpPoster` currently rewrites the outbound `vcon` field to `"0.3.0"`
+for compatibility with the vcon-mcp REST API before POSTing. This is
+unrelated to the spec-compliance work above (`VconBuilder.build()` still
+produces a `"0.4.0"` vCon internally) and is flagged, not fixed, by
+CON-1086.
 
 ## Development
 
