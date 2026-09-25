@@ -6,6 +6,8 @@ When AUDIO_URL_BASE is set, the dialog URL becomes
 """
 
 import json
+from datetime import datetime, timedelta
+
 import pytest
 from audio_adapter.builder import VconBuilder
 
@@ -122,3 +124,106 @@ class TestDialogUrl:
         vcon = builder.build(filepath=str(audio), sender="a", receiver="b", extension="wav")
 
         assert _dialog_url(vcon) == f"file://{audio.absolute()}"
+
+
+def _vcon_dict(vcon) -> dict:
+    return json.loads(vcon.to_json())
+
+
+class TestSpecCompliance:
+    """CON-1086: `vcon` syntax, `mediatype` (not `mimetype`), a spec-compliant
+    tags attachment, and a UTC-aware `created_at`.
+    """
+
+    def test_vcon_syntax_is_0_4_0(self, tmp_path, wav_bytes):
+        audio = _make_audio_file(tmp_path, "15551234567_15559876543.wav", wav_bytes)
+        builder = VconBuilder(extract_duration=False)
+
+        vcon = builder.build(
+            filepath=str(audio), sender="15551234567", receiver="15559876543", extension="wav"
+        )
+
+        assert _vcon_dict(vcon)["vcon"] == "0.4.0"
+
+    def test_created_at_is_utc_aware_iso8601(self, tmp_path, wav_bytes):
+        audio = _make_audio_file(tmp_path, "a_b.wav", wav_bytes)
+        builder = VconBuilder(extract_duration=False)
+
+        vcon = builder.build(filepath=str(audio), sender="a", receiver="b", extension="wav")
+
+        created_at = _vcon_dict(vcon)["created_at"]
+        # datetime.fromisoformat rejects a bare offset-less timestamp; this
+        # also fails if created_at were e.g. "...Z" without being parseable,
+        # or missing the offset entirely.
+        parsed = datetime.fromisoformat(created_at)
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() == timedelta(0)
+
+    def test_dialog_uses_mediatype_not_mimetype(self, tmp_path, wav_bytes):
+        audio = _make_audio_file(tmp_path, "a_b.wav", wav_bytes)
+        builder = VconBuilder(extract_duration=False)
+
+        vcon = builder.build(filepath=str(audio), sender="a", receiver="b", extension="wav")
+
+        dialog = _vcon_dict(vcon)["dialog"][0]
+        assert dialog["mediatype"] == "audio/wav"
+        assert "mimetype" not in dialog
+
+    def test_tags_attachment_has_string_body_and_party_dialog_start(self, tmp_path, wav_bytes):
+        audio = _make_audio_file(tmp_path, "15551234567_15559876543.wav", wav_bytes)
+        builder = VconBuilder(extract_duration=False)
+
+        vcon = builder.build(
+            filepath=str(audio),
+            sender="15551234567",
+            receiver="15559876543",
+            extension="wav",
+            trunk="trunk1",
+        )
+
+        payload = _vcon_dict(vcon)
+        tags_atts = [a for a in payload["attachments"] if a["purpose"] == "tags"]
+        assert len(tags_atts) == 1
+        att = tags_atts[0]
+
+        assert isinstance(att["body"], str), "tags attachment body must be a JSON string"
+        assert att["encoding"] == "json"
+        assert att["mediatype"] == "application/json"
+        assert att["party"] == 0
+        assert att["dialog"] == 0
+        assert "start" in att
+
+        tags = json.loads(att["body"])
+        assert isinstance(tags, list)
+        assert "source:audio_adapter" in tags
+        assert "original_filename:15551234567_15559876543.wav" in tags
+        assert "trunk:trunk1" in tags
+        assert "originating:15551234567" in tags
+        assert "destination:15559876543" in tags
+
+    def test_no_lawful_basis_by_default(self, tmp_path, wav_bytes, monkeypatch):
+        """Unset LAWFUL_BASIS -> no lawful_basis attachment, never a default."""
+        monkeypatch.delenv("LAWFUL_BASIS", raising=False)
+        audio = _make_audio_file(tmp_path, "a_b.wav", wav_bytes)
+        builder = VconBuilder(extract_duration=False)
+
+        vcon = builder.build(filepath=str(audio), sender="a", receiver="b", extension="wav")
+
+        payload = _vcon_dict(vcon)
+        assert not [a for a in payload["attachments"] if a["purpose"] == "lawful_basis"]
+        assert "lawful_basis" not in payload.get("extensions", [])
+
+    def test_lawful_basis_attachment_when_configured(self, tmp_path, wav_bytes):
+        from audio_adapter.vcon_builder import LawfulBasisConfig
+
+        audio = _make_audio_file(tmp_path, "a_b.wav", wav_bytes)
+        cfg = LawfulBasisConfig(lawful_basis="consent")
+        builder = VconBuilder(extract_duration=False, lawful_basis_cfg=cfg)
+
+        vcon = builder.build(filepath=str(audio), sender="a", receiver="b", extension="wav")
+
+        payload = _vcon_dict(vcon)
+        lawful_basis_atts = [a for a in payload["attachments"] if a["purpose"] == "lawful_basis"]
+        assert len(lawful_basis_atts) == 1
+        assert lawful_basis_atts[0]["start"] == payload["created_at"]
+        assert "lawful_basis" in payload["extensions"]
