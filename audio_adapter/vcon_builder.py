@@ -1,5 +1,5 @@
 """Spec-compliance helpers for vCon construction (syntax 0.4.0,
-draft-ietf-vcon-vcon-core-02).
+draft-ietf-vcon-vcon-core).
 
 `LawfulBasisConfig`, `add_lawful_basis()`, `finalize_vcon()`, and
 `sha512_b64url()` below are copied verbatim (imports/logging only adapted)

@@ -142,7 +142,7 @@ The pattern must have at least 2 capture groups:
 
 ## vCon Structure
 
-The adapter builds vCons against `"vcon": "0.4.0"` (draft-ietf-vcon-vcon-core-02).
+The adapter builds vCons against `"vcon": "0.4.0"` (draft-ietf-vcon-vcon-core).
 Audio is referenced by URL (`file://` by default, or `AUDIO_URL_BASE` +
 relative path), not embedded, so the dialog carries `url` rather than an
 inline `body`. Tags and the optional lawful-basis record are `attachments`,
