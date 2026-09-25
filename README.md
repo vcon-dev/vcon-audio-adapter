@@ -198,12 +198,6 @@ the configuration reference above); it is never inferred or defaulted.
 `granted_at` is the vCon's own `created_at` (the file's creation time) --
 the adapter has no earlier signal to attest to at ingest time.
 
-Note: `HttpPoster` currently rewrites the outbound `vcon` field to `"0.3.0"`
-for compatibility with the vcon-mcp REST API before POSTing. This is
-unrelated to the spec-compliance work above (`VconBuilder.build()` still
-produces a `"0.4.0"` vCon internally) and is flagged, not fixed, by
-CON-1086.
-
 ## Development
 
 ### Setup development environment

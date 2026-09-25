@@ -50,19 +50,13 @@ class HttpPoster:
             else:
                 logger.info(f"Posting vCon {vcon.uuid} to {url}")
 
-            # Convert vCon to dict, strip vcon-lib's empty meta/metadata
-            # placeholders (finalize_vcon(), see vcon_builder.py), and
-            # ensure 'vcon' version field is present.
-            # Use 0.3.0 for compatibility with vcon-mcp REST API
-            #
-            # NOTE (CON-1086): this downgrades every outbound vCon from the
-            # spec-target 0.4.0 that VconBuilder.build() produces to 0.3.0.
-            # Out of scope for this card (not in its findings list) but
-            # worth flagging: the delivery path undoes the syntax-version
-            # work above it. See the CON-1086 report.
+            # Convert vCon to dict and strip vcon-lib's empty meta/metadata
+            # placeholders (finalize_vcon(), see vcon_builder.py). The pinned
+            # vcon-lib already sets "vcon": "0.4.0"; the fallback only covers
+            # a vCon built some other way without a syntax version.
             vcon_dict = finalize_vcon(json.loads(vcon.to_json()))
             if 'vcon' not in vcon_dict or vcon_dict['vcon'] == '0.0.1':
-                vcon_dict['vcon'] = '0.3.0'
+                vcon_dict['vcon'] = '0.4.0'
             vcon_json = json.dumps(vcon_dict)
 
             # POST to endpoint
