@@ -142,11 +142,13 @@ The pattern must have at least 2 capture groups:
 
 ## vCon Structure
 
-The adapter builds vCons against `"vcon": "0.4.0"` (draft-ietf-vcon-vcon-core).
+The adapter builds vCons against `"vcon": "0.4.0"` (draft-ietf-vcon-vcon-core-04).
 Audio is referenced by URL (`file://` by default, or `AUDIO_URL_BASE` +
-relative path), not embedded, so the dialog carries `url` rather than an
-inline `body`. Tags and the optional lawful-basis record are `attachments`,
-each with a string `body`, per the core spec:
+relative path), not embedded, so the dialog carries `url` and a
+`content_hash` of the file's bytes rather than an inline `body`. Tags and
+the optional lawful-basis record are `attachments` with `encoding: "json"`,
+where -04 (Section 2.3.2, CDDL `body: any`) makes `body` the JSON value
+itself -- not a `json.dumps()` string:
 
 ```json
 {
@@ -166,6 +168,7 @@ each with a string `body`, per the core spec:
       "mediatype": "audio/wav",
       "filename": "15085551212_19995551234.wav",
       "url": "file:///path/to/15085551212_19995551234.wav",
+      "content_hash": "sha512-Fbaz7OxqvmceMglopNqDPq7YtEVcC-k-B6BF-V0AMK-pHd2gboBh_Z89SZPmHtvLZTox24US6Q7-HkwyImCapw",
       "duration": 125.5
     }
   ],
@@ -177,7 +180,7 @@ each with a string `body`, per the core spec:
       "dialog": 0,
       "mediatype": "application/json",
       "encoding": "json",
-      "body": "[\"source:audio_adapter\", \"original_filename:15085551212_19995551234.wav\", \"originating:15085551212\", \"destination:19995551234\", \"duration_seconds:125.50\"]"
+      "body": ["source:audio_adapter", "original_filename:15085551212_19995551234.wav", "originating:15085551212", "destination:19995551234", "duration_seconds:125.50"]
     },
     {
       "purpose": "lawful_basis",
@@ -186,12 +189,17 @@ each with a string `body`, per the core spec:
       "dialog": 0,
       "mediatype": "application/json",
       "encoding": "json",
-      "body": "{\"lawful_basis\": \"consent\", \"purpose_grants\": [{\"purpose\": \"recording\", \"granted\": true, \"granted_at\": \"2024-01-15T10:30:00+00:00\"}]}"
+      "body": {"lawful_basis": "consent", "purpose_grants": [{"purpose": "recording", "granted": true, "granted_at": "2024-01-15T10:30:00+00:00"}]}
     }
   ],
   "extensions": ["lawful_basis"]
 }
 ```
+
+A reader that needs to accept older (-02-shaped) vCons too -- where these
+bodies were `json.dumps()` strings -- can use
+`audio_adapter.vcon_builder.json_body(attachment)`, which returns the
+parsed value whether `body` is already the raw value or a legacy string.
 
 The `lawful_basis` attachment is only added when `LAWFUL_BASIS` is set (see
 the configuration reference above); it is never inferred or defaulted.
