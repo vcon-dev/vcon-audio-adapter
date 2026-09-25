@@ -1,24 +1,32 @@
 """Spec-compliance helpers for vCon construction (syntax 0.4.0,
-draft-ietf-vcon-vcon-core).
+draft-ietf-vcon-vcon-core-04).
 
 `LawfulBasisConfig`, `add_lawful_basis()`, `finalize_vcon()`, and
 `sha512_b64url()` below are copied verbatim (imports/logging only adapted)
 from the adapter template's `vcon_builder.py`
 (`vcon-dev/vcon-adapter-template`, pull request #1) so this adapter and the template can be
-kept in sync. `add_tags()` is new to this adapter, not present in the
-template.
+kept in sync. `add_tags()` and `json_body()` are new to this adapter, not
+present in the template.
 
 Lawful basis (draft-howe-vcon-lawful-basis, extension name "lawful_basis"):
 use `LawfulBasisConfig` + `add_lawful_basis()` below. Do NOT use vcon-lib's
 `Vcon.add_lawful_basis_attachment()` -- as of vcon-lib 0.9.6 it writes a
-non-string `body` (a dict), which violates the core spec requirement that
-every attachment `body` be a string.
+`body` shape that doesn't match this module's.
 
 `finalize_vcon()` strips vcon-lib's empty `meta`/`metadata` placeholders
 before delivery. `add_tags()` is a spec-compliant replacement for
-vcon-lib's `Vcon.add_tag()`, whose `tags` attachment writes an array
-`body` under `encoding: "json"` instead of the string `body` the core
-schema requires -- see the module docstring on tags in `builder.py`.
+vcon-lib's `Vcon.add_tag()`, which may omit `party`/`dialog`/`start` and
+`mediatype` -- see the module docstring on tags in `builder.py`.
+
+JSON attachment bodies (-04 change): per draft-ietf-vcon-vcon-core-04
+Section 2.3.2 (CDDL `body: any`), when `encoding: "json"` the attachment's
+`body` is the JSON value itself (a dict or list), not a `json.dumps()`
+string. A `body` is only ever a string when `encoding` is unset or names a
+non-JSON encoding (e.g. `"base64url"`). `add_tags()` and
+`add_lawful_basis()` below write raw values; `json_body()` reads a JSON
+attachment's body back out, accepting both the raw value (current) and a
+legacy JSON-string body (older vCons), so a reader doesn't have to care
+which shape it's looking at.
 """
 
 from __future__ import annotations
@@ -108,18 +116,16 @@ def add_tags(
 ) -> None:
     """Attach a spec-compliant `tags` attachment to `vcon`.
 
-    Replaces vcon-lib's `Vcon.add_tag()`, which writes `purpose: "tags"`
-    with an ARRAY body under `encoding: "json"` and may omit `party`/
-    `dialog`/`start` -- the core schema requires every attachment `body` to
-    be a string. This emits the same `["key:value", ...]` list, but as a
-    JSON-encoded STRING body (`json.dumps`), with `party`, `dialog`,
-    `start`, and `mediatype` set. A vcon-lib fix for `add_tag()` is tracked
-    separately; use this helper until that lands.
+    Replaces vcon-lib's `Vcon.add_tag()`, which may omit `party`/`dialog`/
+    `start`/`mediatype`. This emits the same `["key:value", ...]` list
+    vcon-lib's `add_tag()`/`get_tag()` use, as the raw JSON `body` value
+    (a list) under `encoding: "json"` -- per -04, a JSON `body` is the
+    value itself, not a `json.dumps()` string. With that fixed, vcon-lib's
+    own `add_tag()` output shape is close to right; this helper is kept
+    for the `party`/`dialog`/`start`/`mediatype` it still sets.
 
     `tags` is a list of `(name, value)` pairs, appended in order as
-    `"name:value"` strings, matching the shape vcon-lib's `add_tag()` and
-    `get_tag()` already use elsewhere -- so any code that reads this
-    attachment's body as a list of `"key:value"` strings keeps working.
+    `"name:value"` strings.
     """
     if not tags:
         return
@@ -133,9 +139,23 @@ def add_tags(
             "dialog": dialog,
             "mediatype": "application/json",
             "encoding": "json",
-            "body": json.dumps(body),
+            "body": body,
         }
     )
+
+
+def json_body(attachment: Mapping[str, Any]) -> Any:
+    """Return an attachment's JSON body value.
+
+    Accepts both the current raw-value shape (`body` already a dict/list/
+    etc. under `encoding: "json"`) and a legacy JSON-string `body`
+    (`json.loads()`'d before returning), so a reader doesn't need to know
+    which a given vCon used.
+    """
+    body = attachment.get("body")
+    if isinstance(body, str):
+        return json.loads(body)
+    return body
 
 
 @dataclass(frozen=True)
@@ -302,7 +322,9 @@ def add_lawful_basis(
             # The vendored core schema (tests/schema/vcon_json_schema.json)
             # requires `mediatype` on any attachment with a non-empty `body`.
             "mediatype": "application/json",
-            "body": json.dumps(body),
+            # -04: encoding=json means body IS the value, not a json.dumps()
+            # string.
+            "body": body,
         }
     )
 

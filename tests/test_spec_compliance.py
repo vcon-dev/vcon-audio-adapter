@@ -7,6 +7,10 @@ enforce.
 `tests/test_spec_compliance.py` (`vcon-dev/vcon-adapter-template`,
 pull request #1) -- it only depends on `jsonschema`
 (stdlib `json`/`pathlib` aside) and the vendored schema file.
+
+Body rule (draft-ietf-vcon-vcon-core-04 Section 2.3.2, CDDL `body: any`):
+a `body` must be a `str` UNLESS `encoding == "json"`, in which case it
+must NOT be a `str` (the JSON value itself -- a dict, list, etc.).
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ import jsonschema
 import pytest
 
 from audio_adapter.builder import VconBuilder
-from audio_adapter.vcon_builder import LawfulBasisConfig, finalize_vcon
+from audio_adapter.vcon_builder import LawfulBasisConfig, finalize_vcon, json_body
 
 SCHEMA_PATH = Path(__file__).parent / "schema" / "vcon_json_schema.json"
 
@@ -53,7 +57,8 @@ def assert_spec_compliant(vcon_dict: dict[str, Any], schema_path: Path | str) ->
     for node in _walk(vcon_dict):
         assert "mimetype" not in node, f"found legacy `mimetype` key in: {node}"
 
-    # Every attachment carries purpose/start/party/dialog, and a string body.
+    # Every attachment carries purpose/start/party/dialog, and a body whose
+    # type matches its encoding (str, unless encoding == "json").
     for att in vcon_dict.get("attachments", []):
         assert "purpose" in att, f"attachment missing `purpose`: {att}"
         assert "type" not in att, f"attachment uses legacy `type` instead of `purpose`: {att}"
@@ -61,14 +66,26 @@ def assert_spec_compliant(vcon_dict: dict[str, Any], schema_path: Path | str) ->
         assert "party" in att, f"attachment missing `party`: {att}"
         assert "dialog" in att, f"attachment missing `dialog`: {att}"
         if "body" in att:
-            assert isinstance(att["body"], str), f"attachment `body` is not a string: {att}"
+            if att.get("encoding") == "json":
+                assert not isinstance(att["body"], str), (
+                    f"encoding=json attachment `body` is a string, should be "
+                    f"the raw JSON value: {att}"
+                )
+            else:
+                assert isinstance(att["body"], str), f"attachment `body` is not a string: {att}"
 
-    # Every analysis body is a string too.
+    # Same body/encoding rule for analysis.
     for analysis in vcon_dict.get("analysis", []):
         if "body" in analysis:
-            assert isinstance(analysis["body"], str), (
-                f"analysis `body` is not a string: {analysis}"
-            )
+            if analysis.get("encoding") == "json":
+                assert not isinstance(analysis["body"], str), (
+                    f"encoding=json analysis `body` is a string, should be "
+                    f"the raw JSON value: {analysis}"
+                )
+            else:
+                assert isinstance(analysis["body"], str), (
+                    f"analysis `body` is not a string: {analysis}"
+                )
         assert "schema_version" not in analysis, f"legacy `schema_version` in: {analysis}"
         assert "vendor" in analysis, f"analysis missing required `vendor`: {analysis}"
 
@@ -141,7 +158,10 @@ def test_sample_vcon_has_lawful_basis_attachment(sample_vcon_dict: dict[str, Any
         att for att in sample_vcon_dict["attachments"] if att["purpose"] == "lawful_basis"
     ]
     assert len(lawful_basis_atts) == 1
-    body = json.loads(lawful_basis_atts[0]["body"])
+    assert not isinstance(lawful_basis_atts[0]["body"], str), (
+        "encoding=json body should be the raw dict, not a json.dumps() string"
+    )
+    body = json_body(lawful_basis_atts[0])
     assert body["lawful_basis"] == "consent"
     assert "lawful_basis" in sample_vcon_dict.get("extensions", [])
 
@@ -177,3 +197,34 @@ def test_non_string_analysis_body_fails_the_check() -> None:
     ]
     with pytest.raises(AssertionError, match="not a string"):
         assert_spec_compliant(bad, SCHEMA_PATH)
+
+
+def test_json_encoded_string_body_fails_the_check() -> None:
+    """-04: encoding=json means body IS the value; a json.dumps() string
+    under encoding=json is the old (-02) shape and must fail now.
+    """
+    bad = {
+        "vcon": "0.4.0",
+        "uuid": _FIXTURE_UUID,
+        "created_at": "2026-01-02T12:00:00+00:00",
+    }
+    bad["attachments"] = [
+        {
+            "purpose": "tags",
+            "start": "2026-01-02T12:00:00+00:00",
+            "party": 0,
+            "dialog": 0,
+            "mediatype": "application/json",
+            "encoding": "json",
+            "body": json.dumps(["source:audio_adapter"]),
+        }
+    ]
+    with pytest.raises(AssertionError, match="should be the raw JSON value"):
+        assert_spec_compliant(bad, SCHEMA_PATH)
+
+
+def test_json_body_accepts_raw_value_and_legacy_string() -> None:
+    raw = {"purpose": "tags", "encoding": "json", "body": ["a:b"]}
+    legacy = {"purpose": "tags", "encoding": "json", "body": json.dumps(["a:b"])}
+    assert json_body(raw) == ["a:b"]
+    assert json_body(legacy) == ["a:b"]

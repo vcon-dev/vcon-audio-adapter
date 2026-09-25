@@ -169,7 +169,7 @@ class TestSpecCompliance:
         assert dialog["mediatype"] == "audio/wav"
         assert "mimetype" not in dialog
 
-    def test_tags_attachment_has_string_body_and_party_dialog_start(self, tmp_path, wav_bytes):
+    def test_tags_attachment_has_raw_body_and_party_dialog_start(self, tmp_path, wav_bytes):
         audio = _make_audio_file(tmp_path, "15551234567_15559876543.wav", wav_bytes)
         builder = VconBuilder(extract_duration=False)
 
@@ -186,14 +186,16 @@ class TestSpecCompliance:
         assert len(tags_atts) == 1
         att = tags_atts[0]
 
-        assert isinstance(att["body"], str), "tags attachment body must be a JSON string"
         assert att["encoding"] == "json"
+        assert not isinstance(att["body"], str), (
+            "encoding=json body should be the raw list, not a json.dumps() string"
+        )
         assert att["mediatype"] == "application/json"
         assert att["party"] == 0
         assert att["dialog"] == 0
         assert "start" in att
 
-        tags = json.loads(att["body"])
+        tags = att["body"]
         assert isinstance(tags, list)
         assert "source:audio_adapter" in tags
         assert "original_filename:15551234567_15559876543.wav" in tags
