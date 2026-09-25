@@ -4,9 +4,8 @@ JSON schema, plus the non-negotiables the schema alone doesn't fully
 enforce.
 
 `assert_spec_compliant()` is copied verbatim from the adapter template's
-`tests/test_spec_compliance.py` (branch
-`thomashowe/con-1081-template-lawful-basis`, repo
-`vcon-dev/vcon-adapter-template`) -- it only depends on `jsonschema`
+`tests/test_spec_compliance.py` (`vcon-dev/vcon-adapter-template`,
+pull request #1) -- it only depends on `jsonschema`
 (stdlib `json`/`pathlib` aside) and the vendored schema file.
 """
 

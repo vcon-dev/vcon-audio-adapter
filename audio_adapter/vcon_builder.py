@@ -3,9 +3,8 @@ draft-ietf-vcon-vcon-core-02).
 
 `LawfulBasisConfig`, `add_lawful_basis()`, `finalize_vcon()`, and
 `sha512_b64url()` below are copied verbatim (imports/logging only adapted)
-from the adapter template's `vcon_builder.py` (branch
-`thomashowe/con-1081-template-lawful-basis`, repo
-`vcon-dev/vcon-adapter-template`) so this adapter and the template can be
+from the adapter template's `vcon_builder.py`
+(`vcon-dev/vcon-adapter-template`, pull request #1) so this adapter and the template can be
 kept in sync. `add_tags()` is new to this adapter, not present in the
 template.
 
