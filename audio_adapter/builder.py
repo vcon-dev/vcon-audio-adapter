@@ -1,4 +1,13 @@
-"""vCon builder to create vCons from audio files."""
+"""vCon builder to create vCons from audio files.
+
+Tags: vcon-lib's `Vcon.add_tag()` writes a `purpose: "tags"` attachment
+with an ARRAY `body` under `encoding: "json"` (and may omit `party`/
+`dialog`/`start`), which violates the core spec's requirement that every
+attachment `body` be a string. A vcon-lib fix is tracked separately; until
+it lands, this module builds the tags attachment directly via
+`vcon_builder.add_tags()`, which emits the same `["key:value", ...]` list
+as a JSON-encoded STRING body, with `party`, `dialog`, and `start` set.
+"""
 
 import logging
 from pathlib import Path
@@ -7,6 +16,14 @@ from typing import Optional
 from vcon import Vcon
 from vcon.party import Party
 from vcon.dialog import Dialog
+
+from audio_adapter.vcon_builder import (
+    VCON_SYNTAX,
+    LawfulBasisConfig,
+    add_lawful_basis,
+    add_tags,
+    sha512_b64url,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -82,6 +99,7 @@ class VconBuilder:
         extract_duration: bool = True,
         url_base: Optional[str] = None,
         url_base_path: Optional[str] = None,
+        lawful_basis_cfg: Optional[LawfulBasisConfig] = None,
     ):
         """Initialize builder.
 
@@ -93,11 +111,17 @@ class VconBuilder:
             url_base_path: Filesystem directory the relative path is computed
                 against (e.g. WATCH_DIRECTORY). Required when url_base is set
                 for files outside the directory we fall back to the filename.
+            lawful_basis_cfg: Lawful-basis configuration (see
+                `LawfulBasisConfig`). Defaults to `LawfulBasisConfig.from_env()`
+                (this adapter has no YAML config block, so there is nothing to
+                merge via `resolve()`). Leaving `LAWFUL_BASIS*` unset means no
+                lawful-basis attachment is added; a warning is logged once.
         """
         self.dialog_type = dialog_type
         self.extract_duration = extract_duration
         self.url_base = url_base or None
         self.url_base_path = Path(url_base_path).resolve() if url_base_path else None
+        self.lawful_basis_cfg = lawful_basis_cfg or LawfulBasisConfig.from_env()
 
     def build(
         self,
@@ -143,13 +167,18 @@ class VconBuilder:
 
             # Create vCon
             vcon = Vcon.build_new()
+            vcon.vcon_dict["vcon"] = VCON_SYNTAX
 
-            # Set creation time from file modification time
-            try:
-                vcon.created_at = creation_time.isoformat()
-            except AttributeError:
-                # Some vcon versions have created_at as read-only
-                logger.debug("Could not set created_at attribute (read-only in this vcon version)")
+            # created_at as UTC ISO 8601 (creation_time is tz-aware UTC, so
+            # isoformat() already carries a "+00:00" offset). vcon-lib's
+            # `created_at` is a read-only property as of 0.9.4 (no fset), so
+            # `vcon.created_at = ...` raises AttributeError and previously
+            # left the build_new()-assigned timestamp in place silently.
+            # Write the dict field directly instead -- this works regardless
+            # of whether a given vcon-lib release happens to expose a
+            # setter.
+            created_at = creation_time.isoformat()
+            vcon.vcon_dict["created_at"] = created_at
 
             # Add parties
             sender_party = Party(tel=sender)
@@ -165,6 +194,11 @@ class VconBuilder:
             # file server that exposes the audio directory.
             file_url = self._build_dialog_url(path)
 
+            # The core schema requires `content_hash` on any dialog that
+            # carries `url` (external media). Compute it from the file's own
+            # bytes so it verifies against whatever `file_url` points at.
+            content_hash = sha512_b64url(path.read_bytes())
+
             # Create dialog for the audio recording using URL reference
             # instead of embedding the audio data
             dialog = Dialog(
@@ -172,25 +206,40 @@ class VconBuilder:
                 start=creation_time,
                 parties=[0, 1],  # Both sender and receiver participate
                 originator=0,   # Sender initiated the call
-                mimetype=mime_type,
+                mediatype=mime_type,
                 filename=path.name,
                 url=file_url,
+                content_hash=content_hash,
                 duration=duration,
             )
 
             # Add dialog to vCon
             vcon.add_dialog(dialog)
 
-            # Add metadata tags
-            vcon.add_tag("source", "audio_adapter")
-            vcon.add_tag("original_filename", path.name)
-            vcon.add_tag("file_size", str(file_size))
+            # Add metadata tags. Built directly via add_tags() rather than
+            # vcon-lib's Vcon.add_tag() -- see the module docstring above.
+            tags = [
+                ("source", "audio_adapter"),
+                ("original_filename", path.name),
+                ("file_size", str(file_size)),
+            ]
             if trunk:
-                vcon.add_tag("trunk", trunk)
-            vcon.add_tag("originating", sender)
-            vcon.add_tag("destination", receiver)
+                tags.append(("trunk", trunk))
+            tags.append(("originating", sender))
+            tags.append(("destination", receiver))
             if duration:
-                vcon.add_tag("duration_seconds", f"{duration:.2f}")
+                tags.append(("duration_seconds", f"{duration:.2f}"))
+            add_tags(vcon, tags, start=created_at, party=0, dialog=0)
+
+            # Lawful basis (draft-howe-vcon-lawful-basis). granted_at is the
+            # vCon's own created_at unless the adapter operator configures an
+            # explicit LAWFUL_BASIS_* override elsewhere -- there is no
+            # separate "granted at" signal available at ingest time (the
+            # adapter only sees a file that already exists on disk), so the
+            # file's creation timestamp is the honest choice: it is the
+            # earliest moment this adapter can attest to. Unset LAWFUL_BASIS
+            # means no attachment is added (see add_lawful_basis()).
+            add_lawful_basis(vcon, self.lawful_basis_cfg, granted_at=created_at, party=0, dialog=0)
 
             logger.info(
                 f"Created vCon {vcon.uuid} from {filepath} "

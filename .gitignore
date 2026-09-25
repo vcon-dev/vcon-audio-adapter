@@ -106,6 +106,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.iterator
 .venv
 env/
 venv/
@@ -166,3 +167,6 @@ uv.lock
 # Local development
 *.local
 .venv-test/
+
+# oh-my-claudecode plugin scratch (session ids, tool throttles, per-machine paths)
+.omc/
