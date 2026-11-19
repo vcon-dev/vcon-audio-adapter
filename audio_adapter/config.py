@@ -1,10 +1,13 @@
 """Configuration management for audio adapter using .env file."""
 
+import logging
 import os
 import re
 from datetime import datetime
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 
 class Config:
@@ -110,10 +113,17 @@ class Config:
         ]
 
         # Audio-specific settings
-        # Dialog type: "recording" (default) or "audio"
+        # Dialog type. vCon core-05 has only "recording" for audio media;
+        # "audio" is still accepted for existing deployments but is written
+        # as "recording".
         self.dialog_type = os.getenv("DIALOG_TYPE", "recording")
         if self.dialog_type not in ("recording", "audio"):
             raise ValueError(f"DIALOG_TYPE must be 'recording' or 'audio', got: {self.dialog_type}")
+        if self.dialog_type == "audio":
+            logger.warning(
+                "DIALOG_TYPE=audio is not a vCon core-05 dialog type; writing 'recording'"
+            )
+            self.dialog_type = "recording"
 
         # Whether to extract audio duration using mutagen/ffprobe
         extract_duration_str = os.getenv("EXTRACT_DURATION", "true").lower()

@@ -125,7 +125,7 @@ The pattern must have at least 2 capture groups:
 | `CONSERVER_HEADER_NAME` | Header name for API token | `x-conserver-api-token` |
 | `FILENAME_PATTERN` | Regex pattern for parsing filenames | See above |
 | `SUPPORTED_FORMATS` | Comma-separated list of extensions | `wav,mp3,ogg,m4a,flac,aac,wma,aiff,opus` |
-| `DIALOG_TYPE` | vCon dialog type | `recording` |
+| `DIALOG_TYPE` | vCon dialog type (`audio` is accepted and written as `recording`, the core-05 type) | `recording` |
 | `EXTRACT_DURATION` | Extract audio duration | `true` |
 | `INGRESS_LISTS` | Comma-separated ingress queues | None |
 | `PROCESS_EXISTING` | Process existing files on startup | `true` |
@@ -136,35 +136,54 @@ The pattern must have at least 2 capture groups:
 | `LAWFUL_BASIS` | The GDPR lawful basis for processing: one of `consent`, `contract`, `legal_obligation`, `vital_interests`, `public_task`, `legitimate_interests`. **Unset (default) means no `lawful_basis` attachment is added to any vCon** (a warning is logged once); never guess or default a basis in code. | unset |
 | `LAWFUL_BASIS_PURPOSE` | Comma-separated purposes the basis was granted for (e.g. `recording,transcription`). Ignored when `LAWFUL_BASIS` is unset. | `recording` |
 | `LAWFUL_BASIS_JURISDICTION` | Optional jurisdiction the basis applies in (e.g. `US-MA`). | unset |
-| `LAWFUL_BASIS_EXPIRATION` | Optional ISO 8601 expiration timestamp for the basis. | unset |
-| `LAWFUL_BASIS_PROOF_MECHANISM` | Optional mechanism type recording how the basis was established (e.g. `external_system`). | unset |
-| `LAWFUL_BASIS_PROOF_DESCRIPTION` | Optional free-text description of the proof mechanism. | unset |
+| `LAWFUL_BASIS_EXPIRATION` | Optional ISO 8601 expiration timestamp for the basis. Unset writes `"expiration": null` (indefinite), as the lawful-basis draft requires the field. | unset |
+| `LAWFUL_BASIS_PROOF_MECHANISM` | Optional `proof_type` recording how the basis was established: `verbal_confirmation`, `signed_document`, `cryptographic_signature` or `external_system`. | unset |
+| `LAWFUL_BASIS_PROOF_DESCRIPTION` | Optional free-text description, written to the proof mechanism's `proof_data.description`. | unset |
 
 ## vCon Structure
 
-The adapter builds vCons against `"vcon": "0.4.0"` (draft-ietf-vcon-vcon-core-04).
+The adapter builds vCons against `"vcon": "0.5.0"` (draft-ietf-vcon-vcon-core-05)
+using `vcon>=1.0.3,<2`. Version 1.0.0 of this adapter moved from 0.4.0 (core-04)
+to 0.5.0; a consumer that only understands 0.4.0 must be upgraded (vcon-lib 1.x
+reads both).
+
+Each audio file is one conversation, so each vCon has one Session (index 0).
+The Session's `parties` are the caller and the callee (caller first, so the
+caller is the implied originator; there is no `originator` on the Dialog in
+core-05). The recording Dialog lists its contributors (both sides speak) and is
+listed in the Session's `dialog`. Attachments are scoped with `party` plus
+`session`.
+
 Audio is referenced by URL (`file://` by default, or `AUDIO_URL_BASE` +
 relative path), not embedded, so the dialog carries `url` and a
 `content_hash` of the file's bytes rather than an inline `body`. Tags and
 the optional lawful-basis record are `attachments` with `encoding: "json"`,
-where -04 (Section 2.3.2, CDDL `body: any`) makes `body` the JSON value
-itself -- not a `json.dumps()` string:
+where `body` is the JSON value itself -- not a `json.dumps()` string.
+`DIALOG_TYPE=audio` is still accepted but is written as `recording`, the
+only core-05 dialog type for media.
 
 ```json
 {
-  "vcon": "0.4.0",
+  "vcon": "0.5.0",
   "uuid": "generated-uuid",
   "created_at": "2024-01-15T10:30:00+00:00",
   "parties": [
     {"tel": "15085551212"},
     {"tel": "19995551234"}
   ],
+  "sessions": [
+    {
+      "start": "2024-01-15T10:30:00+00:00",
+      "duration": 125.5,
+      "parties": [0, 1],
+      "dialog": [0]
+    }
+  ],
   "dialog": [
     {
       "type": "recording",
       "start": "2024-01-15T10:30:00+00:00",
       "parties": [0, 1],
-      "originator": 0,
       "mediatype": "audio/wav",
       "filename": "15085551212_19995551234.wav",
       "url": "file:///path/to/15085551212_19995551234.wav",
@@ -177,7 +196,7 @@ itself -- not a `json.dumps()` string:
       "purpose": "tags",
       "start": "2024-01-15T10:30:00+00:00",
       "party": 0,
-      "dialog": 0,
+      "session": 0,
       "mediatype": "application/json",
       "encoding": "json",
       "body": ["source:audio_adapter", "original_filename:15085551212_19995551234.wav", "originating:15085551212", "destination:19995551234", "duration_seconds:125.50"]
@@ -186,10 +205,10 @@ itself -- not a `json.dumps()` string:
       "purpose": "lawful_basis",
       "start": "2024-01-15T10:30:00+00:00",
       "party": 0,
-      "dialog": 0,
+      "session": 0,
       "mediatype": "application/json",
       "encoding": "json",
-      "body": {"lawful_basis": "consent", "purpose_grants": [{"purpose": "recording", "granted": true, "granted_at": "2024-01-15T10:30:00+00:00"}]}
+      "body": {"lawful_basis": "consent", "expiration": null, "purpose_grants": [{"purpose": "recording", "granted": true, "granted_at": "2024-01-15T10:30:00+00:00"}]}
     }
   ],
   "extensions": ["lawful_basis"]

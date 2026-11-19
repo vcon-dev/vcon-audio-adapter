@@ -1,28 +1,31 @@
-"""Spec-compliance helpers for vCon construction (syntax 0.4.0,
-draft-ietf-vcon-vcon-core-04).
+"""Spec-compliance helpers for vCon construction (syntax 0.5.0,
+draft-ietf-vcon-vcon-core-05).
 
 `LawfulBasisConfig`, `add_lawful_basis()`, `finalize_vcon()`, and
-`sha512_b64url()` below are copied verbatim (imports/logging only adapted)
-from the adapter template's `vcon_builder.py`
-(`vcon-dev/vcon-adapter-template`, pull request #1) so this adapter and the template can be
-kept in sync. `add_tags()` and `json_body()` are new to this adapter, not
-present in the template.
+`sha512_b64url()` below follow the adapter template's `vcon_builder.py`
+(`vcon-dev/vcon-adapter-template`, pull request #5, the core-05 port) so
+this adapter and the template can be kept in sync. `add_tags()` and
+`json_body()` are new to this adapter, not present in the template.
+
+Sessions (core-05): one audio file is one conversation, so every vCon this
+adapter builds has exactly one Session (index 0). Its `parties` are the
+receivers (caller first, so the caller is the implied originator); the
+recording Dialog lists its contributors and is listed by the Session.
+Attachments are scoped with `party` plus `session`.
 
 Lawful basis (draft-howe-vcon-lawful-basis, extension name "lawful_basis"):
-use `LawfulBasisConfig` + `add_lawful_basis()` below. Do NOT use vcon-lib's
-`Vcon.add_lawful_basis_attachment()` -- as of vcon-lib 0.9.6 it writes a
-`body` shape that doesn't match this module's.
+use `LawfulBasisConfig` + `add_lawful_basis()` below. It builds the body
+from adapter config, scopes it with `party` plus `session`, and never
+invents a basis.
 
-`finalize_vcon()` strips vcon-lib's empty `meta`/`metadata` placeholders
-before delivery. `add_tags()` is a spec-compliant replacement for
-vcon-lib's `Vcon.add_tag()`, which may omit `party`/`dialog`/`start` and
-`mediatype` -- see the module docstring on tags in `builder.py`.
+`finalize_vcon()` strips empty `meta`/`metadata` placeholders before
+delivery (vcon-lib 1.x no longer writes them; kept for vCons built
+elsewhere). `add_tags()` writes the `tags` attachment with `start` set to
+the file's time rather than vcon-lib's `add_tag()` default.
 
-JSON attachment bodies (-04 change): per draft-ietf-vcon-vcon-core-04
-Section 2.3.2 (CDDL `body: any`), when `encoding: "json"` the attachment's
-`body` is the JSON value itself (a dict or list), not a `json.dumps()`
-string. A `body` is only ever a string when `encoding` is unset or names a
-non-JSON encoding (e.g. `"base64url"`). `add_tags()` and
+JSON attachment bodies: per draft-ietf-vcon-vcon-core-05 (Attachment
+Content), when `encoding: "json"` the attachment's `body` is the JSON value
+itself (a dict or list), not a `json.dumps()` string. `add_tags()` and
 `add_lawful_basis()` below write raw values; `json_body()` reads a JSON
 attachment's body back out, accepting both the raw value (current) and a
 legacy JSON-string body (older vCons), so a reader doesn't have to care
@@ -46,7 +49,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-VCON_SYNTAX = "0.4.0"
+VCON_SYNTAX = "0.5.0"
 
 # The six GDPR lawful bases, per draft-howe-vcon-lawful-basis.
 VALID_LAWFUL_BASES = frozenset(
@@ -112,17 +115,14 @@ def add_tags(
     *,
     start: str,
     party: int = 0,
-    dialog: int = 0,
+    session: int | list[int] = 0,
 ) -> None:
-    """Attach a spec-compliant `tags` attachment to `vcon`.
+    """Attach a `tags` attachment to `vcon`.
 
-    Replaces vcon-lib's `Vcon.add_tag()`, which may omit `party`/`dialog`/
-    `start`/`mediatype`. This emits the same `["key:value", ...]` list
-    vcon-lib's `add_tag()`/`get_tag()` use, as the raw JSON `body` value
-    (a list) under `encoding: "json"` -- per -04, a JSON `body` is the
-    value itself, not a `json.dumps()` string. With that fixed, vcon-lib's
-    own `add_tag()` output shape is close to right; this helper is kept
-    for the `party`/`dialog`/`start`/`mediatype` it still sets.
+    Emits the same `["key:value", ...]` list vcon-lib's `add_tag()`/
+    `get_tag()` use, as the raw JSON `body` value (a list) under
+    `encoding: "json"`, scoped with `party` plus `session` (core-05
+    requires `party` and one of `dialog`/`session` on every attachment).
 
     `tags` is a list of `(name, value)` pairs, appended in order as
     `"name:value"` strings.
@@ -136,7 +136,7 @@ def add_tags(
             "purpose": "tags",
             "start": start,
             "party": party,
-            "dialog": dialog,
+            "session": session,
             "mediatype": "application/json",
             "encoding": "json",
             "body": body,
@@ -166,7 +166,7 @@ class LawfulBasisConfig:
     adapter's YAML `vcon.lawful_basis:` block (`from_yaml`), or a merge of
     both (`resolve`, where environment variables win over YAML per-field).
 
-    Never default `lawful_basis` in code -- an unset value means the adapter
+    Never default `lawful_basis` in code — an unset value means the adapter
     builds vCons with no lawful-basis attachment, and `add_lawful_basis()`
     logs a warning rather than inventing a basis.
     """
@@ -175,8 +175,10 @@ class LawfulBasisConfig:
     purposes: tuple[str, ...] = ("recording",)
     jurisdiction: str | None = None
     expiration: str | None = None  # ISO 8601
-    proof_mechanism: str | None = None  # mechanism_type, e.g. "external_system"
-    proof_description: str | None = None
+    # proof_type: verbal_confirmation, signed_document, cryptographic_signature
+    # or external_system
+    proof_mechanism: str | None = None
+    proof_description: str | None = None  # written to proof_data.description
 
     def __post_init__(self) -> None:
         if self.lawful_basis is not None and self.lawful_basis not in VALID_LAWFUL_BASES:
@@ -275,13 +277,17 @@ def add_lawful_basis(
     *,
     granted_at: str,
     party: int = 0,
-    dialog: int = 0,
+    session: int | list[int] | None = None,
 ) -> bool:
     """Attach a `lawful_basis` record (draft-howe-vcon-lawful-basis) to `vcon`.
 
     Returns False and adds nothing if `cfg.lawful_basis` is unset (logging a
     warning once per process). Returns True and appends the attachment
     (plus the `lawful_basis` extension, deduped) otherwise.
+
+    The attachment is scoped with `party` (whose basis it is) plus `session`
+    (which conversation it covers). With `session=None` the only Session is
+    used; if the vCon has several, pass `session` explicitly. We never guess.
 
     `granted_at` is the ISO 8601 timestamp the basis was established (used
     as the attachment's `start` and each purpose grant's `granted_at`).
@@ -298,32 +304,45 @@ def add_lawful_basis(
             _warned_no_lawful_basis = True
         return False
 
-    body: dict[str, Any] = {"lawful_basis": cfg.lawful_basis}
-    if cfg.expiration is not None:
-        body["expiration"] = cfg.expiration
+    # `expiration` is required by the draft; null means indefinite.
+    body: dict[str, Any] = {"lawful_basis": cfg.lawful_basis, "expiration": cfg.expiration}
     body["purpose_grants"] = [
         {"purpose": purpose, "granted": True, "granted_at": granted_at} for purpose in cfg.purposes
     ]
     if cfg.jurisdiction is not None:
         body["jurisdiction"] = cfg.jurisdiction
     if cfg.proof_mechanism is not None:
-        proof_mechanism: dict[str, Any] = {"mechanism_type": cfg.proof_mechanism}
+        # Proof mechanism object (draft section 5.2.4): proof_type, timestamp,
+        # proof_data are all required.
+        proof_data: dict[str, Any] = {}
         if cfg.proof_description is not None:
-            proof_mechanism["description"] = cfg.proof_description
-        body["proof_mechanisms"] = [proof_mechanism]
+            proof_data["description"] = cfg.proof_description
+        body["proof_mechanisms"] = [
+            {"proof_type": cfg.proof_mechanism, "timestamp": granted_at, "proof_data": proof_data}
+        ]
+
+    if session is None:
+        sessions = vcon.vcon_dict.get("sessions") or []
+        if len(sessions) != 1:
+            raise ValueError(
+                f"add_lawful_basis() needs session= when the vCon has {len(sessions)} "
+                "Sessions (only a single-Session vCon has an unambiguous default)"
+            )
+        session = 0
 
     vcon.vcon_dict["attachments"].append(
         {
             "purpose": "lawful_basis",
             "start": granted_at,
             "party": party,
-            "dialog": dialog,
+            "session": session,
             "encoding": "json",
             # The vendored core schema (tests/schema/vcon_json_schema.json)
             # requires `mediatype` on any attachment with a non-empty `body`.
             "mediatype": "application/json",
-            # -04: encoding=json means body IS the value, not a json.dumps()
-            # string.
+            # core-05 (Attachment Content / Analysis Content): with
+            # encoding: "json", body IS the JSON value, not a json.dumps()
+            # string. Do not stringify this.
             "body": body,
         }
     )

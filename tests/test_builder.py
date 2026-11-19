@@ -135,7 +135,7 @@ class TestSpecCompliance:
     tags attachment, and a UTC-aware `created_at`.
     """
 
-    def test_vcon_syntax_is_0_4_0(self, tmp_path, wav_bytes):
+    def test_vcon_syntax_is_0_5_0(self, tmp_path, wav_bytes):
         audio = _make_audio_file(tmp_path, "15551234567_15559876543.wav", wav_bytes)
         builder = VconBuilder(extract_duration=False)
 
@@ -143,7 +143,36 @@ class TestSpecCompliance:
             filepath=str(audio), sender="15551234567", receiver="15559876543", extension="wav"
         )
 
-        assert _vcon_dict(vcon)["vcon"] == "0.4.0"
+        assert _vcon_dict(vcon)["vcon"] == "0.5.0"
+
+    def test_one_session_lists_the_recording_dialog(self, tmp_path, wav_bytes):
+        audio = _make_audio_file(tmp_path, "15551234567_15559876543.wav", wav_bytes)
+        builder = VconBuilder(extract_duration=False)
+
+        vcon = builder.build(
+            filepath=str(audio), sender="15551234567", receiver="15559876543", extension="wav"
+        )
+
+        payload = _vcon_dict(vcon)
+        assert len(payload["sessions"]) == 1
+        session = payload["sessions"][0]
+        assert session["parties"] == [0, 1]
+        assert session["dialog"] == [0]
+        assert session["start"] == payload["created_at"]
+        assert "originator" not in session
+        dialog = payload["dialog"][0]
+        assert dialog["type"] == "recording"
+        assert dialog["parties"] == [0, 1]
+        assert "originator" not in dialog
+        assert vcon.is_valid() == (True, [])
+
+    def test_audio_dialog_type_is_written_as_recording(self, tmp_path, wav_bytes):
+        audio = _make_audio_file(tmp_path, "a_b.wav", wav_bytes)
+        builder = VconBuilder(dialog_type="audio", extract_duration=False)
+
+        vcon = builder.build(filepath=str(audio), sender="a", receiver="b", extension="wav")
+
+        assert _vcon_dict(vcon)["dialog"][0]["type"] == "recording"
 
     def test_created_at_is_utc_aware_iso8601(self, tmp_path, wav_bytes):
         audio = _make_audio_file(tmp_path, "a_b.wav", wav_bytes)
@@ -169,7 +198,7 @@ class TestSpecCompliance:
         assert dialog["mediatype"] == "audio/wav"
         assert "mimetype" not in dialog
 
-    def test_tags_attachment_has_raw_body_and_party_dialog_start(self, tmp_path, wav_bytes):
+    def test_tags_attachment_has_raw_body_and_party_session_start(self, tmp_path, wav_bytes):
         audio = _make_audio_file(tmp_path, "15551234567_15559876543.wav", wav_bytes)
         builder = VconBuilder(extract_duration=False)
 
@@ -192,7 +221,8 @@ class TestSpecCompliance:
         )
         assert att["mediatype"] == "application/json"
         assert att["party"] == 0
-        assert att["dialog"] == 0
+        assert att["session"] == 0
+        assert "dialog" not in att
         assert "start" in att
 
         tags = att["body"]
@@ -228,4 +258,7 @@ class TestSpecCompliance:
         lawful_basis_atts = [a for a in payload["attachments"] if a["purpose"] == "lawful_basis"]
         assert len(lawful_basis_atts) == 1
         assert lawful_basis_atts[0]["start"] == payload["created_at"]
+        assert lawful_basis_atts[0]["party"] == 0
+        assert lawful_basis_atts[0]["session"] == 0
+        assert lawful_basis_atts[0]["body"]["expiration"] is None
         assert "lawful_basis" in payload["extensions"]
