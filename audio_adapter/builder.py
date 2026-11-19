@@ -1,12 +1,12 @@
-"""vCon builder to create vCons from audio files.
+"""vCon builder to create vCons from audio files (vCon core-05, syntax 0.5.0).
 
-Tags: vcon-lib's `Vcon.add_tag()` writes a `purpose: "tags"` attachment
-with an ARRAY `body` under `encoding: "json"` (and may omit `party`/
-`dialog`/`start`), which violates the core spec's requirement that every
-attachment `body` be a string. A vcon-lib fix is tracked separately; until
-it lands, this module builds the tags attachment directly via
-`vcon_builder.add_tags()`, which emits the same `["key:value", ...]` list
-as a JSON-encoded STRING body, with `party`, `dialog`, and `start` set.
+Each audio file is one conversation: one Session (index 0) whose `parties`
+are the caller and the callee (caller first, so the caller is the implied
+originator), and one recording Dialog listed by that Session.
+
+Tags are written by `vcon_builder.add_tags()` (the same `["key:value", ...]`
+list vcon-lib's `add_tag()` uses, as the raw JSON body) so the attachment's
+`start` is the file's time; it is scoped with `party` plus `session`.
 """
 
 import logging
@@ -16,6 +16,7 @@ from typing import Optional
 from vcon import Vcon
 from vcon.party import Party
 from vcon.dialog import Dialog
+from vcon.session import Session
 
 from audio_adapter.vcon_builder import (
     VCON_SYNTAX,
@@ -104,7 +105,9 @@ class VconBuilder:
         """Initialize builder.
 
         Args:
-            dialog_type: Type of dialog to create ("recording" or "audio")
+            dialog_type: Type of dialog to create. Only "recording" exists in
+                vCon core-05; "audio" is accepted for compatibility and
+                written as "recording".
             extract_duration: Whether to extract audio duration
             url_base: Optional HTTP(S) URL prefix. When set, the dialog URL
                 becomes "{url_base}/<relative-path>" instead of file://.
@@ -117,7 +120,7 @@ class VconBuilder:
                 merge via `resolve()`). Leaving `LAWFUL_BASIS*` unset means no
                 lawful-basis attachment is added; a warning is logged once.
         """
-        self.dialog_type = dialog_type
+        self.dialog_type = "recording" if dialog_type == "audio" else dialog_type
         self.extract_duration = extract_duration
         self.url_base = url_base or None
         self.url_base_path = Path(url_base_path).resolve() if url_base_path else None
@@ -199,13 +202,20 @@ class VconBuilder:
             # bytes so it verifies against whatever `file_url` points at.
             content_hash = sha512_b64url(path.read_bytes())
 
+            # One Session for the call. Its parties are the receivers; the
+            # first (the sender/caller) is the implied originator, so no
+            # `originator` is needed.
+            session_index = vcon.add_session(
+                Session(start=created_at, duration=duration, parties=[0, 1])
+            )
+
             # Create dialog for the audio recording using URL reference
-            # instead of embedding the audio data
+            # instead of embedding the audio data. Dialog parties are the
+            # contributors: both sides speak on the recording.
             dialog = Dialog(
                 type=self.dialog_type,
                 start=creation_time,
-                parties=[0, 1],  # Both sender and receiver participate
-                originator=0,   # Sender initiated the call
+                parties=[0, 1],
                 mediatype=mime_type,
                 filename=path.name,
                 url=file_url,
@@ -213,11 +223,10 @@ class VconBuilder:
                 duration=duration,
             )
 
-            # Add dialog to vCon
-            vcon.add_dialog(dialog)
+            # Add dialog to vCon; the Session lists it.
+            vcon.add_dialog(dialog, session=session_index)
 
-            # Add metadata tags. Built directly via add_tags() rather than
-            # vcon-lib's Vcon.add_tag() -- see the module docstring above.
+            # Add metadata tags via add_tags() -- see the module docstring.
             tags = [
                 ("source", "audio_adapter"),
                 ("original_filename", path.name),
@@ -229,7 +238,7 @@ class VconBuilder:
             tags.append(("destination", receiver))
             if duration:
                 tags.append(("duration_seconds", f"{duration:.2f}"))
-            add_tags(vcon, tags, start=created_at, party=0, dialog=0)
+            add_tags(vcon, tags, start=created_at, party=0, session=session_index)
 
             # Lawful basis (draft-howe-vcon-lawful-basis). granted_at is the
             # vCon's own created_at unless the adapter operator configures an
@@ -239,7 +248,13 @@ class VconBuilder:
             # file's creation timestamp is the honest choice: it is the
             # earliest moment this adapter can attest to. Unset LAWFUL_BASIS
             # means no attachment is added (see add_lawful_basis()).
-            add_lawful_basis(vcon, self.lawful_basis_cfg, granted_at=created_at, party=0, dialog=0)
+            add_lawful_basis(
+                vcon,
+                self.lawful_basis_cfg,
+                granted_at=created_at,
+                party=0,
+                session=session_index,
+            )
 
             logger.info(
                 f"Created vCon {vcon.uuid} from {filepath} "

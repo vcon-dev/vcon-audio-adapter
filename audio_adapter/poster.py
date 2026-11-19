@@ -6,7 +6,7 @@ import requests
 from typing import Dict, List, Optional
 from vcon import Vcon
 
-from audio_adapter.vcon_builder import finalize_vcon
+from audio_adapter.vcon_builder import VCON_SYNTAX, finalize_vcon
 
 
 logger = logging.getLogger(__name__)
@@ -51,12 +51,12 @@ class HttpPoster:
                 logger.info(f"Posting vCon {vcon.uuid} to {url}")
 
             # Convert vCon to dict and strip vcon-lib's empty meta/metadata
-            # placeholders (finalize_vcon(), see vcon_builder.py). The pinned
-            # vcon-lib already sets "vcon": "0.4.0"; the fallback only covers
-            # a vCon built some other way without a syntax version.
+            # placeholders (finalize_vcon(), see vcon_builder.py). vcon-lib
+            # 1.x already sets "vcon": "0.5.0"; the fallback only covers a
+            # vCon built some other way without a syntax version.
             vcon_dict = finalize_vcon(json.loads(vcon.to_json()))
             if 'vcon' not in vcon_dict or vcon_dict['vcon'] == '0.0.1':
-                vcon_dict['vcon'] = '0.4.0'
+                vcon_dict['vcon'] = VCON_SYNTAX
             vcon_json = json.dumps(vcon_dict)
 
             # POST to endpoint

@@ -3,14 +3,16 @@ attachment configured via `LAWFUL_BASIS`) against the vendored official
 JSON schema, plus the non-negotiables the schema alone doesn't fully
 enforce.
 
-`assert_spec_compliant()` is copied verbatim from the adapter template's
-`tests/test_spec_compliance.py` (`vcon-dev/vcon-adapter-template`,
-pull request #1) -- it only depends on `jsonschema`
-(stdlib `json`/`pathlib` aside) and the vendored schema file.
+`assert_spec_compliant()` follows the adapter template's
+`tests/test_spec_compliance.py` (`vcon-dev/vcon-adapter-template`) -- it
+only depends on `jsonschema` (stdlib `json`/`pathlib` aside) and the
+vendored core-05 schema file. The sample vCon is also checked with
+vcon-lib's own `is_valid()` and lawful-basis validator.
 
-Body rule (draft-ietf-vcon-vcon-core-04 Section 2.3.2, CDDL `body: any`):
-a `body` must be a `str` UNLESS `encoding == "json"`, in which case it
-must NOT be a `str` (the JSON value itself -- a dict, list, etc.).
+Body rule (draft-ietf-vcon-vcon-core-05, Attachment Content, CDDL
+`body: any`): a `body` must be a `str` UNLESS `encoding == "json"`, in
+which case it must NOT be a `str` (the JSON value itself -- a dict, list,
+etc.).
 """
 
 from __future__ import annotations
@@ -57,14 +59,17 @@ def assert_spec_compliant(vcon_dict: dict[str, Any], schema_path: Path | str) ->
     for node in _walk(vcon_dict):
         assert "mimetype" not in node, f"found legacy `mimetype` key in: {node}"
 
-    # Every attachment carries purpose/start/party/dialog, and a body whose
-    # type matches its encoding (str, unless encoding == "json").
+    # Every attachment carries purpose/start/party plus dialog or session,
+    # and a body whose type matches its encoding (str, unless
+    # encoding == "json").
     for att in vcon_dict.get("attachments", []):
         assert "purpose" in att, f"attachment missing `purpose`: {att}"
         assert "type" not in att, f"attachment uses legacy `type` instead of `purpose`: {att}"
         assert "start" in att, f"attachment missing `start`: {att}"
         assert "party" in att, f"attachment missing `party`: {att}"
-        assert "dialog" in att, f"attachment missing `dialog`: {att}"
+        assert "dialog" in att or "session" in att, (
+            f"attachment missing `dialog`/`session` scope: {att}"
+        )
         if "body" in att:
             if att.get("encoding") == "json":
                 assert not isinstance(att["body"], str), (
@@ -119,7 +124,7 @@ def sample_vcon_dict(tmp_path: Path, wav_bytes: bytes) -> dict[str, Any]:
         purposes=("recording", "transcription"),
         jurisdiction="US-MA",
         expiration="2027-01-02T12:00:00Z",
-        proof_mechanism="audio_recording",
+        proof_mechanism="verbal_confirmation",
         proof_description="Verbal consent captured at start of recording",
     )
     builder = VconBuilder(extract_duration=False, lawful_basis_cfg=cfg)
@@ -153,6 +158,18 @@ def test_sample_vcon_with_lawful_basis_is_spec_compliant(
     assert_spec_compliant(sample_vcon_dict, SCHEMA_PATH)
 
 
+def test_sample_vcon_passes_vcon_lib_validation(sample_vcon_dict: dict[str, Any]) -> None:
+    from vcon import Vcon
+    from vcon.extensions.lawful_basis import LawfulBasisValidator
+
+    vcon = Vcon(sample_vcon_dict)
+    assert vcon.is_valid() == (True, [])
+    assert vcon.get_validation_warnings() == []
+    att = next(a for a in sample_vcon_dict["attachments"] if a["purpose"] == "lawful_basis")
+    result = LawfulBasisValidator().validate_attachment(att)
+    assert result.is_valid, result.errors
+
+
 def test_sample_vcon_has_lawful_basis_attachment(sample_vcon_dict: dict[str, Any]) -> None:
     lawful_basis_atts = [
         att for att in sample_vcon_dict["attachments"] if att["purpose"] == "lawful_basis"
@@ -171,31 +188,32 @@ _FIXTURE_UUID = "01a0da6b-7289-8143-9dd8-dd37220d739c"
 
 def test_mimetype_key_fails_the_check() -> None:
     bad = {
-        "vcon": "0.4.0",
+        "vcon": "0.5.0",
         "uuid": _FIXTURE_UUID,
         "created_at": "2026-01-02T12:00:00+00:00",
     }
     bad["dialog"] = [{"type": "recording", "mimetype": "audio/wav"}]
+    bad["sessions"] = [{"dialog": [0]}]
     with pytest.raises(AssertionError, match="mimetype"):
         assert_spec_compliant(bad, SCHEMA_PATH)
 
 
 def test_non_string_analysis_body_fails_the_check() -> None:
     bad = {
-        "vcon": "0.4.0",
+        "vcon": "0.5.0",
         "uuid": _FIXTURE_UUID,
         "created_at": "2026-01-02T12:00:00+00:00",
     }
     bad["analysis"] = [
         {
             "type": "summary",
-            "dialog": 0,
             "vendor": "v",
             "encoding": "none",
             "body": {"not": "a string"},
         }
     ]
-    with pytest.raises(AssertionError, match="not a string"):
+    # The core-05 schema itself rejects it ("is not of type 'string'").
+    with pytest.raises(AssertionError, match="not (of type 'string'|a string)"):
         assert_spec_compliant(bad, SCHEMA_PATH)
 
 
@@ -204,7 +222,7 @@ def test_json_encoded_string_body_fails_the_check() -> None:
     under encoding=json is the old (-02) shape and must fail now.
     """
     bad = {
-        "vcon": "0.4.0",
+        "vcon": "0.5.0",
         "uuid": _FIXTURE_UUID,
         "created_at": "2026-01-02T12:00:00+00:00",
     }
@@ -213,7 +231,7 @@ def test_json_encoded_string_body_fails_the_check() -> None:
             "purpose": "tags",
             "start": "2026-01-02T12:00:00+00:00",
             "party": 0,
-            "dialog": 0,
+            "session": 0,
             "mediatype": "application/json",
             "encoding": "json",
             "body": json.dumps(["source:audio_adapter"]),
